@@ -134,6 +134,17 @@ module.exports = async function handler(req, res) {
       });
     }
     
+    // Chat test endpoint
+    else if (path === 'chat/test') {
+      return res.status(200).json({
+        data: {
+          status: 'ok',
+          message: 'Chat API is working properly',
+          timestamp: new Date().toISOString()
+        }
+      });
+    }
+    
     // Chat history endpoint
     else if (path === 'chat/history') {
       if (req.method !== 'GET') {
@@ -273,6 +284,138 @@ module.exports = async function handler(req, res) {
       }
       
       return res.status(405).json({ error: 'Method not allowed' });
+    }
+    
+    // User limits endpoint
+    else if (path === 'users/limits') {
+      if (req.method !== 'GET') {
+        return res.status(405).json({ error: 'Method not allowed' });
+      }
+      
+      const userId = req.headers['user-id'] || req.query.userId;
+      
+      if (!userId) {
+        return res.status(400).json({ error: 'Missing user ID' });
+      }
+      
+      // Get user metrics from Supabase
+      const { data: metrics, error } = await supabase
+        .from('user_metrics')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+      
+      if (error && error.code !== 'PGRST116') {
+        return res.status(500).json({ error: 'Failed to fetch user limits' });
+      }
+      
+      const limits = {
+        id: metrics?.id || `metrics-${userId}`,
+        user_id: userId,
+        daily_limit: metrics?.daily_limit || 5,
+        chats_used: metrics?.chats_used || 0,
+        is_pro: metrics?.is_pro || false,
+        messageLimit: metrics?.daily_limit || 10,
+        messagesUsed: metrics?.chats_used || 0,
+        resetDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        last_updated: metrics?.last_updated || new Date().toISOString(),
+        created_at: metrics?.created_at || new Date().toISOString()
+      };
+      
+      return res.status(200).json({
+        data: limits
+      });
+    }
+    
+    // Storage quota endpoint
+    else if (path === 'storage/quota') {
+      if (req.method !== 'GET') {
+        return res.status(405).json({ error: 'Method not allowed' });
+      }
+      
+      const userId = req.headers['user-id'] || req.query.userId;
+      
+      if (!userId) {
+        return res.status(400).json({ error: 'Missing user ID' });
+      }
+      
+      // Get storage limits from Supabase
+      const { data: limits, error } = await supabase
+        .from('storage_limits')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+      
+      if (error && error.code !== 'PGRST116') {
+        return res.status(500).json({ error: 'Failed to fetch storage quota' });
+      }
+      
+      const quota = {
+        id: limits?.id || `storage-${userId}`,
+        user_id: userId,
+        max_storage_bytes: limits?.max_storage_bytes || 104857600, // 100MB default
+        used_storage_bytes: limits?.used_storage_bytes || 0,
+        max_files: limits?.max_files || 20,
+        used_files: limits?.used_files || 0,
+        is_premium: limits?.is_premium || false,
+        tier_name: limits?.tier_name || 'free',
+        updated_at: limits?.updated_at || new Date().toISOString()
+      };
+      
+      return res.status(200).json({
+        data: quota
+      });
+    }
+    
+    // Templates endpoint
+    else if (path === 'templates/use') {
+      if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed' });
+      }
+      
+      const { templateId, userId } = req.body;
+      
+      if (!templateId || !userId) {
+        return res.status(400).json({ error: 'Missing template ID or user ID' });
+      }
+      
+      // Mock template response
+      const templateResponse = {
+        id: templateId,
+        content: "This is a template response for template ID: " + templateId,
+        created_at: new Date().toISOString()
+      };
+      
+      return res.status(200).json({
+        data: templateResponse
+      });
+    }
+    
+    // Payment verification endpoint
+    else if (path === 'payments/verify') {
+      if (req.method !== 'POST') {
+        return res.status(405).json({ error: 'Method not allowed' });
+      }
+      
+      const { sessionId, userId } = req.body;
+      
+      if (!sessionId || !userId) {
+        return res.status(400).json({ error: 'Missing session ID or user ID' });
+      }
+      
+      // Mock payment verification
+      const paymentVerification = {
+        verified: true,
+        session_id: sessionId,
+        user_id: userId,
+        amount: 1000,
+        status: 'completed',
+        created_at: new Date().toISOString()
+      };
+      
+      return res.status(200).json({
+        data: paymentVerification
+      });
     }
     
     // Stripe webhook endpoint
