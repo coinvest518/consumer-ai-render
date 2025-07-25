@@ -18,6 +18,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.21.2",
+    "langchain": "^0.3.30",
     "nodemailer": "^6.9.9",
     "socket.io": "^4.8.1",
     "stripe": "^14.18.0"
