@@ -44,20 +44,40 @@ function getChatHistory(sessionId) {
   return chatSessions.get(sessionId);
 }
 
-// Process a message
+// Process a message and build decision trace
 async function processMessage(message, sessionId) {
   try {
     const history = getChatHistory(sessionId);
     const userMessage = new HumanMessage(message);
     history.push(userMessage);
+
+    // Decision trace logic: check for agent/tool keywords
+    let usedAgent = null;
+    let reasoningSteps = [];
+    if (message.includes('[Agent Request:')) {
+      // Extract agent name from message
+      const agentMatch = message.match(/\[Agent Request:\s*(\w+)\]/);
+      usedAgent = agentMatch ? agentMatch[1] : null;
+      reasoningSteps.push(`Agent "${usedAgent}" selected based on user input.`);
+    } else {
+      reasoningSteps.push('No agent/tool used. Answered directly by AI.');
+    }
+
+    reasoningSteps.push('Message added to history.');
     const aiResponse = await chatModel.invoke(history);
     const aiMessage = new AIMessage(aiResponse.content);
     history.push(aiMessage);
+    reasoningSteps.push('AI model generated response.');
+
     return {
       message: aiResponse.content,
       sessionId,
       messageId: `${Date.now()}-ai`,
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      decisionTrace: {
+        usedAgent,
+        steps: reasoningSteps
+      }
     };
   } catch (error) {
     console.error('Error processing message:', error);
