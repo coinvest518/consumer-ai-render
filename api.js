@@ -199,7 +199,7 @@ const processStorageEvent = async (event) => {
 };
 
 // --- LangChain Agent Socket Callback Handler ---
-const { BaseCallbackHandler } = require('langchain/callbacks');
+const { BaseCallbackHandler } = require('@langchain/core/callbacks');
 
 class ThinkingCallbackHandler extends BaseCallbackHandler {
   constructor(socketId, io) {
