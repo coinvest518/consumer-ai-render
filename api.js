@@ -74,110 +74,109 @@ const STORAGE_PLANS = {
 
 // Asynchronous function to process a Stripe event after responding
 const processStripeEvent = async (event) => {
-    try {
-        if (event.type === 'checkout.session.completed') {
-            const session = event.data.object;
-            const userId = session.metadata?.userId;
+  try {
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const userId = session.metadata?.userId;
 
-            if (userId) {
-                console.log(`Processing successful checkout for user: ${userId}`);
-                const { data: metrics, error: metricsError } = await supabase
-                    .from('user_metrics')
-                    .select('*')
-                    .eq('user_id', userId)
-                    .single();
+      if (userId) {
+        console.log(`Processing successful checkout for user: ${userId}`);
+        const { data: metrics, error: metricsError } = await supabase
+          .from('user_metrics')
+          .select('*')
+          .eq('user_id', userId)
+          .single();
 
-                if (metricsError && metricsError.code !== 'PGRST116') throw metricsError;
+        if (metricsError && metricsError.code !== 'PGRST116') throw metricsError;
 
-                const currentMetrics = metrics || {
-                    user_id: userId,
-                    daily_limit: 5,
-                    chats_used: 0,
-                    is_pro: false,
-                };
+        const currentMetrics = metrics || {
+          user_id: userId,
+          daily_limit: 5,
+          chats_used: 0,
+          is_pro: false,
+        };
 
-                await supabase.from('user_metrics').upsert({
-                    ...currentMetrics,
-                    daily_limit: currentMetrics.daily_limit + 50,
-                    is_pro: true,
-                    last_purchase: new Date().toISOString(),
-                    last_updated: new Date().toISOString()
-                });
+        await supabase.from('user_metrics').upsert({
+          ...currentMetrics,
+          daily_limit: currentMetrics.daily_limit + 50,
+          is_pro: true,
+          last_purchase: new Date().toISOString(),
+          last_updated: new Date().toISOString()
+        });
 
-                await supabase.from('purchases').insert([{
-                    user_id: userId,
-                    amount: session.amount_total ? session.amount_total / 100 : 0,
-                    credits: 50,
-                    stripe_session_id: session.id,
-                    status: 'completed',
-                    metadata: {
-                        payment_status: session.payment_status,
-                        customer_email: session.customer_details?.email
-                    }
-                }]);
-                console.log(`User ${userId} metrics and purchase recorded.`);
-            } else {
-                console.error('Webhook received for checkout.session.completed without a userId in metadata.');
-            }
-        }
-    } catch (error) {
-        console.error('Error processing stripe-webhook event asynchronously:', error);
+        await supabase.from('purchases').insert([{
+          user_id: userId,
+          amount: session.amount_total ? session.amount_total / 100 : 0,
+          credits: 50,
+          stripe_session_id: session.id,
+          status: 'completed',
+          metadata: {
+            payment_status: session.payment_status,
+            customer_email: session.customer_details?.email
+          }
+        }]);
+        console.log(`User ${userId} metrics and purchase recorded.`);
+      } else {
+        console.error('Webhook received for checkout.session.completed without a userId in metadata.');
+      }
     }
+  } catch (error) {
+    console.error('Error processing stripe-webhook event asynchronously:', error);
+  }
 };
 
 // Asynchronous function to process a storage-related Stripe event
 const processStorageEvent = async (event) => {
-    try {
-        if (event.type === 'checkout.session.completed') {
-            const session = event.data.object;
-            const { userId, storageBytes: storageBytesStr, files: filesStr, plan } = session.metadata || {};
-            const storageBytes = parseInt(storageBytesStr || '0');
-            const files = parseInt(filesStr || '0');
+  try {
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const { userId, storageBytes: storageBytesStr, files: filesStr, plan } = session.metadata || {};
+      const storageBytes = parseInt(storageBytesStr || '0');
+      const files = parseInt(filesStr || '0');
 
-            if (!userId || !storageBytes || !files || !plan) {
-                throw new Error('Missing required metadata in Stripe session for storage upgrade');
-            }
-            console.log(`Processing storage upgrade for user: ${userId}, plan: ${plan}`);
+      if (!userId || !storageBytes || !files || !plan) {
+        throw new Error('Missing required metadata in Stripe session for storage upgrade');
+      }
+      console.log(`Processing storage upgrade for user: ${userId}, plan: ${plan}`);
 
-            await supabase.from('storage_transactions').update({
-                status: 'completed',
-                completed_at: new Date().toISOString()
-            }).eq('stripe_session_id', session.id);
+      await supabase.from('storage_transactions').update({
+        status: 'completed',
+        completed_at: new Date().toISOString()
+      }).eq('stripe_session_id', session.id);
 
-            const { data: currentLimits, error: limitsError } = await supabase
-                .from('storage_limits')
-                .select('*')
-                .eq('user_id', userId)
-                .single();
+      const { data: currentLimits, error: limitsError } = await supabase
+        .from('storage_limits')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
 
-            if (limitsError && limitsError.code !== 'PGRST116') throw limitsError;
+      if (limitsError && limitsError.code !== 'PGRST116') throw limitsError;
 
-            if (currentLimits) {
-                await supabase.from('storage_limits').update({
-                    max_storage_bytes: (currentLimits.max_storage_bytes || 0) + storageBytes,
-                    max_files: (currentLimits.max_files || 0) + files,
-                    is_premium: true,
-                    tier_name: plan,
-                    updated_at: new Date().toISOString()
-                }).eq('user_id', userId);
-            } else {
-                await supabase.from('storage_limits').insert([{
-                    user_id: userId,
-                    max_storage_bytes: storageBytes,
-                    used_storage_bytes: 0,
-                    max_files: files,
-                    used_files: 0,
-                    is_premium: true,
-                    tier_name: plan
-                }]);
-            }
-            console.log(`Storage limits updated for user: ${userId}`);
-        }
-    } catch (error) {
-        console.error('Error processing storage/webhook event asynchronously:', error);
+      if (currentLimits) {
+        await supabase.from('storage_limits').update({
+          max_storage_bytes: (currentLimits.max_storage_bytes || 0) + storageBytes,
+          max_files: (currentLimits.max_files || 0) + files,
+          is_premium: true,
+          tier_name: plan,
+          updated_at: new Date().toISOString()
+        }).eq('user_id', userId);
+      } else {
+        await supabase.from('storage_limits').insert([{
+          user_id: userId,
+          max_storage_bytes: storageBytes,
+          used_storage_bytes: 0,
+          max_files: files,
+          used_files: 0,
+          is_premium: true,
+          tier_name: plan
+        }]);
+      }
+      console.log(`Storage limits updated for user: ${userId}`);
     }
+  } catch (error) {
+    console.error('Error processing storage/webhook event asynchronously:', error);
+  }
 };
-
 
 // Main API handler
 module.exports = async function handler(req, res) {
@@ -192,37 +191,33 @@ module.exports = async function handler(req, res) {
   try {
     // Stripe webhook endpoint
     if (path === 'stripe-webhook') {
-        if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-        const sig = req.headers['stripe-signature'];
-        try {
-            const event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET || '');
-            res.status(200).json({ received: true }); // Respond immediately
-            processStripeEvent(event); // Process in the background
-        } catch (err) {
-            console.error(`Webhook signature verification failed.`, err.message);
-            return res.status(400).send(`Webhook Error: ${err.message}`);
-        }
-        return; // Stop further execution
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      const sig = req.headers['stripe-signature'];
+      try {
+        const event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET || '');
+        res.status(200).json({ received: true }); // Respond immediately
+        processStripeEvent(event); // Process in the background
+      } catch (err) {
+        console.error(`Webhook signature verification failed.`, err.message);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+      }
+      return; // Stop further execution
     }
 
     // Storage webhook endpoint
     else if (path === 'storage/webhook') {
-        if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-        const sig = req.headers['stripe-signature'];
-        try {
-            const event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET || '');
-            res.status(200).json({ received: true }); // Respond immediately
-            processStorageEvent(event); // Process in the background
-        } catch (err) {
-            console.error('Storage webhook signature verification failed:', err.message);
-            return res.status(400).json({ error: err.message });
-        }
-        return; // Stop further execution
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      const sig = req.headers['stripe-signature'];
+      try {
+        const event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET || '');
+        res.status(200).json({ received: true }); // Respond immediately
+        processStorageEvent(event); // Process in the background
+      } catch (err) {
+        console.error('Storage webhook signature verification failed:', err.message);
+        return res.status(400).json({ error: err.message });
+      }
+      return; // Stop further execution
     }
-
-    // Other endpoints...
-    // Note: The rest of your API logic remains the same.
-    // The following is your original code for other endpoints.
 
     // Chat endpoint
     if (path === 'chat') {
@@ -234,15 +229,39 @@ module.exports = async function handler(req, res) {
       return res.status(200).json({ data: responseData });
     }
 
-    // ... (rest of your endpoints: chat/test, chat/history, session, etc.)
-    // The logic for these non-webhook endpoints does not need to change.
-    // Ensure you copy the rest of your original endpoint logic here.
+    // Chat history endpoint
+    if (path === 'chat/history') {
+      if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+      const sessionId = req.query.sessionId || req.headers['x-session-id'];
+      if (!sessionId) return res.status(400).json({ error: 'Missing sessionId' });
+
+      // Query Supabase for chat history for this session
+      const { data, error } = await supabase
+        .from('chat_history')
+        .select('*')
+        .eq('session_id', sessionId)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        return res.status(500).json({ error: error.message });
+      }
+
+      // Format for frontend
+      const formatted = (data || []).map((msg, idx) => ({
+        id: msg.id || `${sessionId}-${idx}-${msg.role}`,
+        content: msg.content,
+        role: msg.role,
+        created_at: msg.created_at
+      }));
+
+      return res.status(200).json({ data: formatted });
+    }
 
     // Fallback for any unhandled paths
     else {
-        return res.status(404).json({
-            error: { message: `API endpoint /${path} not found`, code: 'NOT_FOUND' }
-        });
+      return res.status(404).json({
+        error: { message: `API endpoint /${path} not found`, code: 'NOT_FOUND' }
+      });
     }
 
   } catch (error) {
