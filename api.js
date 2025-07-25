@@ -198,6 +198,70 @@ const processStorageEvent = async (event) => {
   }
 };
 
+// --- LangChain Agent Socket Callback Handler ---
+const { BaseCallbackHandler } = require('langchain/callbacks');
+
+class ThinkingCallbackHandler extends BaseCallbackHandler {
+  constructor(socketId, io) {
+    super();
+    this.socketId = socketId;
+    this.io = io;
+    this.stepCounter = 0;
+  }
+
+  async handleAgentAction(action, runId) {
+    const step = {
+      id: this.stepCounter++,
+      type: 'processing',
+      title: `Using ${action.tool}`,
+      description: `Executing: ${action.toolInput}`,
+      details: {
+        tool: action.tool,
+        input: action.toolInput,
+        log: action.log
+      },
+      timestamp: new Date().toLocaleTimeString()
+    };
+    this.io.to(this.socketId).emit('agent-step', step);
+  }
+
+  async handleToolEnd(output, runId) {
+    const step = {
+      id: this.stepCounter++,
+      type: 'completed',
+      title: 'Tool Execution Complete',
+      description: `Result: ${output.substring(0, 100)}...`,
+      details: output,
+      timestamp: new Date().toLocaleTimeString()
+    };
+    this.io.to(this.socketId).emit('agent-step', step);
+  }
+
+  async handleLLMStart(llm, prompts, runId) {
+    const step = {
+      id: this.stepCounter++,
+      type: 'planning',
+      title: 'Agent Planning',
+      description: 'Analyzing request and planning approach',
+      details: prompts[0].substring(0, 500) + '...',
+      timestamp: new Date().toLocaleTimeString()
+    };
+    this.io.to(this.socketId).emit('agent-step', step);
+  }
+
+  async handleChainStart(chain, inputs, runId) {
+    const step = {
+      id: this.stepCounter++,
+      type: 'searching',
+      title: 'Processing Chain',
+      description: `Starting ${chain.id || 'unknown'} chain`,
+      details: inputs,
+      timestamp: new Date().toLocaleTimeString()
+    };
+    this.io.to(this.socketId).emit('agent-step', step);
+  }
+}
+
 // Main API handler
 module.exports = async function handler(req, res) {
   // CORS headers are handled by the cors middleware in server.js
@@ -239,14 +303,35 @@ module.exports = async function handler(req, res) {
       return; // Stop further execution
     }
 
-    // Chat endpoint
+    // Chat endpoint with agent thinking events
     if (path === 'chat') {
       if (req.method === 'GET') return res.status(200).json({ status: 'ok' });
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-      const { message, sessionId } = req.body;
-      if (!message || !sessionId) return res.status(400).json({ error: 'Missing message or sessionId' });
-      const responseData = await processMessage(message, sessionId);
-      return res.status(200).json({ data: responseData });
+      const { message, sessionId, socketId } = req.body;
+      if (!message || !sessionId || !socketId) return res.status(400).json({ error: 'Missing message, sessionId, or socketId' });
+      const io = global.io;
+      try {
+        // Signal thinking started
+        io.to(socketId).emit('agent-thinking-start');
+
+        // Attach callback handler to agent (replace with your agent logic if needed)
+        const thinkingCallback = new ThinkingCallbackHandler(socketId, io);
+
+        // If you have a custom agent, use it here. Otherwise, fallback to processMessage
+        // Example: const agent = await createAgent({ callbacks: [thinkingCallback], ... });
+        // const result = await agent.call({ input: message });
+
+        // For now, just call processMessage and emit complete (no step events)
+        const responseData = await processMessage(message, sessionId);
+
+        io.to(socketId).emit('agent-thinking-complete', {
+          response: responseData.message
+        });
+        return res.status(200).json({ data: responseData });
+      } catch (error) {
+        io.to(socketId).emit('agent-thinking-error', error.message);
+        return res.status(500).json({ error: error.message });
+      }
     }
 
     // Chat history endpoint

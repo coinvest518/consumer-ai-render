@@ -14,12 +14,13 @@
     "@datastax/astra-db-ts": "^2.0.1",
     "@langchain/core": "^0.1.25",
     "@langchain/openai": "^0.0.14",
+    "@supabase/supabase-js": "^2.50.5",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.21.2",
     "nodemailer": "^6.9.9",
-    "stripe": "^14.18.0",
-    "@supabase/supabase-js": "^2.50.5"
+    "socket.io": "^4.8.1",
+    "stripe": "^14.18.0"
   },
   "engines": {
     "node": "18.x"

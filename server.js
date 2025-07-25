@@ -1,12 +1,25 @@
+
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const http = require('http');
+const { Server } = require('socket.io');
 const apiHandler = require('./api');
 
 // Load environment variables
 dotenv.config();
 
+
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: ['https://consumerai.info', 'http://localhost:3000', 'https://consumer-ai-render.onrender.com'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    credentials: true
+  }
+});
+global.io = io;
 const PORT = process.env.PORT || 3001;
 
 // CORS configuration
@@ -52,8 +65,13 @@ app.use('/api', (req, res) => {
   return apiHandler(req, res);
 });
 
+// Socket.IO connection event (optional, for debugging)
+io.on('connection', (socket) => {
+  console.log('Socket.IO client connected:', socket.id);
+});
+
 // Start server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Health check available at http://localhost:${PORT}/health`);
 });
