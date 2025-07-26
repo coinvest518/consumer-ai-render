@@ -198,67 +198,336 @@ const processStorageEvent = async (event) => {
   }
 };
 
-// --- LangChain Agent Socket Callback Handler ---
-const { BaseCallbackHandler } = require('langchain/callbacks');
 
-class ThinkingCallbackHandler extends BaseCallbackHandler {
+
+// --- LangChain Agent Socket Callback Handler (New API) ---
+// Implements agent step events using the new LangChain JS callback/event API.
+// See: https://js.langchain.com/docs/guides/callbacks/
+
+const { AgentExecutor, createOpenAIFunctionsAgent } = require('langchain/agents');
+const { CallbackManager } = require('langchain/callbacks');
+
+const { DynamicTool } = require('langchain/tools');
+const axios = require('axios');
+const nodemailer = require('nodemailer');
+const { google } = require('googleapis');
+
+
+// --- Real Tool Integrations (API keys/configs must be set in env) ---
+const tools = [
+  // Tavily Web Search
+  new DynamicTool({
+    name: 'search',
+    description: 'Web search for legal info',
+    func: async (input) => {
+      try {
+        const tavilyKey = process.env.TAVILY_API_KEY;
+        const resp = await axios.post('https://api.tavily.com/search', {
+          query: input,
+          api_key: tavilyKey
+        });
+        const top = resp.data?.results?.[0];
+        return top ? `${top.title}: ${top.snippet} (${top.url})` : 'No results found.';
+      } catch (e) {
+        return `Tavily search error: ${e.message}`;
+      }
+    }
+  }),
+  // Google Calendar (per-user, secure, Supabase JWT)
+  new DynamicTool({
+    name: 'calendar',
+    description: 'Set reminders, deadlines (per-user, secure)',
+    func: async (input, runManager, config) => {
+      try {
+        // Expect config to include supabaseJwt (from frontend)
+        const supabaseJwt = config?.supabaseJwt || (config?.headers && config.headers['authorization']);
+        if (!supabaseJwt) {
+          throw new Error('Missing Supabase JWT for user authentication.');
+        }
+        // Verify JWT and get user info from Supabase
+        const { data: { user }, error: userError } = await supabase.auth.getUser(supabaseJwt);
+        if (userError || !user) {
+          throw new Error('Invalid Supabase JWT or user not found.');
+        }
+        // Fetch Google refresh token from user metadata (must be stored at sign-in)
+        const refreshToken = user.user_metadata?.google_refresh_token;
+        if (!refreshToken) {
+          throw new Error('No Google refresh token found for user. Please reconnect Google.');
+        }
+        // Set up OAuth2 client with user-specific refresh token
+        const oAuth2Client = new google.auth.OAuth2(
+          process.env.GOOGLE_CLIENT_ID,
+          process.env.GOOGLE_CLIENT_SECRET,
+          process.env.GOOGLE_REDIRECT_URI
+        );
+        oAuth2Client.setCredentials({ refresh_token: refreshToken });
+        const calendar = google.calendar({ version: 'v3', auth: oAuth2Client });
+        // Parse input for event details (simple demo)
+        const event = {
+          summary: input,
+          start: { dateTime: new Date(Date.now() + 3600000).toISOString() },
+          end: { dateTime: new Date(Date.now() + 7200000).toISOString() }
+        };
+        await calendar.events.insert({ calendarId: 'primary', requestBody: event });
+        return `Calendar event created: ${input}`;
+      } catch (e) {
+        console.error('Google Calendar tool error:', e);
+        return `Google Calendar error: ${e.message}`;
+      }
+    }
+  }),
+  // Credit Report Analysis (OpenAI-powered)
+  new DynamicTool({
+    name: 'report',
+    description: 'Analyze credit reports (AI-powered)',
+    func: async (input) => {
+      try {
+        // Use OpenAI to analyze the credit report text and return a summary/insights
+        const prompt = [
+          new SystemMessage("You are a financial expert. Analyze the following credit report and provide a summary of key findings, potential issues, and actionable advice for the consumer. Be clear and concise."),
+          new HumanMessage(input)
+        ];
+        const result = await chatModel.invoke(prompt);
+        return result.content;
+      } catch (e) {
+        return `Credit report analysis error: ${e.message}`;
+      }
+    }
+  }),
+  // Dispute Letter Generator (placeholder)
+  new DynamicTool({
+    name: 'letter',
+    description: 'Generate dispute letters',
+    func: async (input) => {
+      // TODO: Implement real letter generation logic
+      return `Dispute letter generated: ${input} (placeholder)`;
+    }
+  }),
+  // Legal Database Lookup (Astra DB + Tavily + OpenAI)
+  new DynamicTool({
+    name: 'legal',
+    description: 'Legal database lookup (Astra DB, Tavily, AI summary)',
+    func: async (input) => {
+      try {
+        // 1. Search Astra DB for relevant legal documents
+        const { AstraDB } = require('@datastax/astra-db-ts');
+        const astra = new AstraDB();
+        // Replace 'legal_docs' and 'content' with your Astra DB collection and field names
+        const astraResults = await astra.collection('legal_docs').find({ $text: { $search: input } }).limit(3).toArray();
+        let bestDoc = null;
+        if (astraResults && astraResults.length > 0) {
+          bestDoc = astraResults[0];
+        }
+        // 2. If no Astra DB result, search Tavily
+        let legalInfo = '';
+        if (bestDoc) {
+          legalInfo = bestDoc.content || JSON.stringify(bestDoc);
+        } else {
+          const tavilyKey = process.env.TAVILY_API_KEY;
+          const resp = await axios.post('https://api.tavily.com/search', {
+            query: input,
+            api_key: tavilyKey
+          });
+          const results = resp.data?.results || [];
+          if (results.length === 0) {
+            return 'No relevant legal information found.';
+          }
+          const top = results[0];
+          legalInfo = `${top.title}\n${top.snippet}\n${top.url}`;
+        }
+        // 3. Summarize the best result with OpenAI
+        const summaryPrompt = [
+          new SystemMessage("You are a legal expert. Read the following legal information and answer the user's question in clear, plain language. If the info is insufficient, say so."),
+          new HumanMessage(`User question: ${input}\n\nLegal info: ${legalInfo}`)
+        ];
+        const result = await chatModel.invoke(summaryPrompt);
+        return result.content;
+      } catch (e) {
+        return `Legal lookup error: ${e.message}`;
+      }
+    }
+  }),
+  // Nodemailer Email (dynamic recipient)
+  new DynamicTool({
+    name: 'email',
+    description: 'Send email notifications (dynamic recipient)',
+    func: async (input) => {
+      try {
+        // You must set up SMTP credentials in your env
+        const transporter = nodemailer.createTransport({
+          host: process.env.SMTP_HOST,
+          port: process.env.SMTP_PORT,
+          secure: process.env.SMTP_SECURE === 'true',
+          auth: {
+            user: process.env.SMTP_USER,
+            pass: process.env.SMTP_PASS
+          }
+        });
+        // Support input as string or object: { to, text, subject }
+        let to, text, subject;
+        if (typeof input === 'object' && input !== null) {
+          to = input.to || process.env.SMTP_TO || process.env.SMTP_FROM;
+          text = input.text || '';
+          subject = input.subject || 'ConsumerAI Notification';
+        } else {
+          to = process.env.SMTP_TO || process.env.SMTP_FROM;
+          text = input;
+          subject = 'ConsumerAI Notification';
+        }
+        const info = await transporter.sendMail({
+          from: process.env.SMTP_FROM,
+          to,
+          subject,
+          text
+        });
+        return `Email sent: ${info.messageId}`;
+      } catch (e) {
+        return `Email error: ${e.message}`;
+      }
+    }
+  }),
+  // USPS Tracking 3.0 API (OAuth2 + REST/JSON)
+  new DynamicTool({
+    name: 'tracking',
+    description: 'Track certified mail (USPS Tracking 3.0)',
+    func: async (input) => {
+      try {
+        // 1. Get OAuth2 access token
+        const clientId = process.env.USPS_OAUTH_CLIENT_ID;
+        const clientSecret = process.env.USPS_OAUTH_CLIENT_SECRET;
+        const tokenResp = await axios.post('https://api.usps.com/oauth2/v3/token',
+          new URLSearchParams({
+            grant_type: 'client_credentials',
+            client_id: clientId,
+            client_secret: clientSecret,
+            scope: 'tracking'
+          }),
+          { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+        );
+        const accessToken = tokenResp.data.access_token;
+        if (!accessToken) throw new Error('Failed to obtain USPS access token');
+        // 2. Call USPS Tracking 3.0 REST API
+        const trackingResp = await axios.get(
+          `https://api.usps.com/tracking/v3/shipments/${encodeURIComponent(input)}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        // 3. Parse and return tracking info
+        const shipment = trackingResp.data?.shipments?.[0];
+        if (!shipment) return 'No tracking information found.';
+        const status = shipment.status || 'Unknown';
+        const summary = shipment.summary || '';
+        return `USPS Tracking Status: ${status}\n${summary}`;
+      } catch (e) {
+        return `USPS tracking error: ${e.response?.data?.error_description || e.message}`;
+      }
+    }
+  }),
+  // Supervisor (real orchestration)
+  new DynamicTool({
+    name: 'supervisor',
+    description: 'Determines if a query needs direct answer or tool/agent orchestration',
+    func: async (input) => {
+      try {
+        // If input is an array, orchestrate as before
+        if (Array.isArray(input)) {
+          const results = [];
+          for (const step of input) {
+            const tool = tools.find(t => t.name === step.tool);
+            if (!tool) {
+              results.push({ tool: step.tool, error: 'Tool not found' });
+              continue;
+            }
+            try {
+              const result = await tool.func(step.input);
+              results.push({ tool: step.tool, result });
+            } catch (e) {
+              results.push({ tool: step.tool, error: e.message });
+            }
+          }
+          return results;
+        }
+        // If input is a string, decide if direct answer or tool is needed
+        if (typeof input === 'string') {
+          // Use OpenAI to classify and route
+          const classifyPrompt = [
+            new SystemMessage("You are a supervisor AI. If the user's query is a simple question, answer it directly. If it requires a tool or agent (like search, calendar, report, letter, legal, email, tracking), return a JSON array of steps: [{ tool, input }]."),
+            new HumanMessage(input)
+          ];
+          const result = await chatModel.invoke(classifyPrompt);
+          // Try to parse as JSON array of steps
+          try {
+            const steps = JSON.parse(result.content);
+            if (Array.isArray(steps)) {
+              // Orchestrate as before
+              const results = [];
+              for (const step of steps) {
+                const tool = tools.find(t => t.name === step.tool);
+                if (!tool) {
+                  results.push({ tool: step.tool, error: 'Tool not found' });
+                  continue;
+                }
+                try {
+                  const toolResult = await tool.func(step.input);
+                  results.push({ tool: step.tool, result: toolResult });
+                } catch (e) {
+                  results.push({ tool: step.tool, error: e.message });
+                }
+              }
+              return results;
+            }
+          } catch (e) {
+            // Not a JSON array, treat as direct answer
+            return result.content;
+          }
+          // Fallback: return as direct answer
+          return result.content;
+        }
+        return 'Supervisor expects a string (user query) or array of steps.';
+      } catch (e) {
+        return `Supervisor error: ${e.message}`;
+      }
+    }
+  })
+];
+
+// Custom callback handler for agent step events
+class SocketIOAgentCallbackHandler {
   constructor(socketId, io) {
-    super();
     this.socketId = socketId;
     this.io = io;
-    this.stepCounter = 0;
+    this.name = 'SocketIOAgentCallbackHandler';
   }
 
-  async handleAgentAction(action, runId) {
-    const step = {
-      id: this.stepCounter++,
-      type: 'processing',
-      title: `Using ${action.tool}`,
-      description: `Executing: ${action.toolInput}`,
-      details: {
-        tool: action.tool,
-        input: action.toolInput,
-        log: action.log
-      },
-      timestamp: new Date().toLocaleTimeString()
-    };
-    this.io.to(this.socketId).emit('agent-step', step);
+  // Called when the agent takes an action (step)
+  async handleAgentAction(action, runId, parentRunId, tags) {
+    this.io.to(this.socketId).emit('agent-step', {
+      tool: action.tool,
+      toolInput: action.toolInput,
+      log: action.log,
+      runId,
+      parentRunId,
+      tags
+    });
   }
 
-  async handleToolEnd(output, runId) {
-    const step = {
-      id: this.stepCounter++,
-      type: 'completed',
-      title: 'Tool Execution Complete',
-      description: `Result: ${output.substring(0, 100)}...`,
-      details: output,
-      timestamp: new Date().toLocaleTimeString()
-    };
-    this.io.to(this.socketId).emit('agent-step', step);
+  // Called when the agent finishes
+  async handleAgentEnd(output, runId, parentRunId, tags) {
+    this.io.to(this.socketId).emit('agent-finish', {
+      output,
+      runId,
+      parentRunId,
+      tags
+    });
   }
 
-  async handleLLMStart(llm, prompts, runId) {
-    const step = {
-      id: this.stepCounter++,
-      type: 'planning',
-      title: 'Agent Planning',
-      description: 'Analyzing request and planning approach',
-      details: prompts[0].substring(0, 500) + '...',
-      timestamp: new Date().toLocaleTimeString()
-    };
-    this.io.to(this.socketId).emit('agent-step', step);
-  }
-
-  async handleChainStart(chain, inputs, runId) {
-    const step = {
-      id: this.stepCounter++,
-      type: 'searching',
-      title: 'Processing Chain',
-      description: `Starting ${chain.id || 'unknown'} chain`,
-      details: inputs,
-      timestamp: new Date().toLocaleTimeString()
-    };
-    this.io.to(this.socketId).emit('agent-step', step);
+  // Called on error
+  async handleAgentError(error, runId, parentRunId, tags) {
+    this.io.to(this.socketId).emit('agent-error', {
+      error: error.message || String(error),
+      runId,
+      parentRunId,
+      tags
+    });
   }
 }
 
@@ -303,7 +572,9 @@ module.exports = async function handler(req, res) {
       return; // Stop further execution
     }
 
-    // Chat endpoint with agent thinking events
+
+
+    // Chat endpoint with agent thinking and step events
     if (path === 'chat') {
       if (req.method === 'GET') return res.status(200).json({ status: 'ok' });
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -314,20 +585,70 @@ module.exports = async function handler(req, res) {
         // Signal thinking started
         io.to(socketId).emit('agent-thinking-start');
 
-        // Attach callback handler to agent (replace with your agent logic if needed)
-        const thinkingCallback = new ThinkingCallbackHandler(socketId, io);
+        // Set up callback manager and handler for agent step events
+        const callbackManager = CallbackManager.fromHandlers({
+          handleAgentAction: async (action, runId, parentRunId, tags) => {
+            io.to(socketId).emit('agent-step', {
+              tool: action.tool,
+              toolInput: action.toolInput,
+              log: action.log,
+              runId,
+              parentRunId,
+              tags
+            });
+          },
+          handleAgentEnd: async (output, runId, parentRunId, tags) => {
+            io.to(socketId).emit('agent-finish', {
+              output,
+              runId,
+              parentRunId,
+              tags
+            });
+          },
+          handleAgentError: async (error, runId, parentRunId, tags) => {
+            io.to(socketId).emit('agent-error', {
+              error: error.message || String(error),
+              runId,
+              parentRunId,
+              tags
+            });
+          }
+        });
 
-        // If you have a custom agent, use it here. Otherwise, fallback to processMessage
-        // Example: const agent = await createAgent({ callbacks: [thinkingCallback], ... });
-        // const result = await agent.call({ input: message });
+        // Create the agent with tools and prompt
+        const agent = await createOpenAIFunctionsAgent({
+          llm: chatModel,
+          tools,
+          // Optionally, you can provide a custom prompt here
+        });
 
-        // For now, just call processMessage and emit complete (no step events)
-        const responseData = await processMessage(message, sessionId);
+        // Create the executor
+        const agentExecutor = new AgentExecutor({
+          agent,
+          tools,
+          // Optionally, pass input/output keys if needed
+        });
+
+        // Run the agent with the callback manager for step events
+        const result = await agentExecutor.invoke({
+          input: message
+        }, {
+          callbacks: [callbackManager]
+        });
 
         io.to(socketId).emit('agent-thinking-complete', {
-          response: responseData.message
+          response: result.output
         });
-        return res.status(200).json({ data: responseData });
+        return res.status(200).json({ data: {
+          message: result.output,
+          sessionId,
+          messageId: `${Date.now()}-ai`,
+          created_at: new Date().toISOString(),
+          decisionTrace: {
+            usedAgent: result.agentName || null,
+            steps: ['Agent executed with tools']
+          }
+        }});
       } catch (error) {
         io.to(socketId).emit('agent-thinking-error', error.message);
         return res.status(500).json({ error: error.message });
