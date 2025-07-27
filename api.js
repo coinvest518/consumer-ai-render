@@ -150,13 +150,16 @@ const processStorageEvent = async (event) => {
   try {
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
-      const { userId, storageBytes: storageBytesStr, files: filesStr, plan } = session.metadata || {};
-      const storageBytes = parseInt(storageBytesStr || '0');
-      const files = parseInt(filesStr || '0');
+      const plan = session.metadata?.plan;
+      const userId = session.metadata?.userId;
+      const planDetails = STORAGE_PLANS[plan];
 
-      if (!userId || !storageBytes || !files || !plan) {
-        throw new Error('Missing required metadata in Stripe session for storage upgrade');
+      if (!userId || !planDetails) {
+        throw new Error('Missing required metadata or unknown plan in Stripe session for storage upgrade');
       }
+      const storageBytes = planDetails.storage;
+      const files = planDetails.files;
+
       console.log(`Processing storage upgrade for user: ${userId}, plan: ${plan}`);
 
       await supabase.from('storage_transactions').update({
