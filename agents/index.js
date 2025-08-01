@@ -1,5 +1,6 @@
 const { ChatOpenAI } = require('@langchain/openai');
 const { TavilySearchResults } = require('@langchain/community/tools/tavily_search');
+const axios = require('axios');
 const { DynamicTool } = require('@langchain/core/tools');
 const nodemailer = require('nodemailer');
 
