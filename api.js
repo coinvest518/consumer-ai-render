@@ -1,5 +1,6 @@
 const { createClient } = require('@supabase/supabase-js');
 const { ChatOpenAI } = require('@langchain/openai');
+const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
 const Stripe = require('stripe');
 
@@ -19,6 +20,13 @@ const supabase = createClient(
 const chatModel = new ChatOpenAI({
   openAIApiKey: process.env.OPENAI_API_KEY,
   modelName: 'gpt-4',
+  temperature: 0.7,
+});
+
+// Initialize Google AI as backup
+const googleModel = new ChatGoogleGenerativeAI({
+  apiKey: process.env.GOOGLE_AI_API_KEY,
+  modelName: 'gemini-pro',
   temperature: 0.7,
 });
 
@@ -80,10 +88,26 @@ async function processMessage(message, sessionId, socketId = null) {
       global.io.to(socketId).emit('agent-thinking-start');
     }
 
-    const aiResponse = await chatModel.invoke(history);
+    let aiResponse;
+    let modelUsed = 'OpenAI';
+    
+    try {
+      aiResponse = await chatModel.invoke(history);
+    } catch (openaiError) {
+      console.log('OpenAI failed, trying Google AI:', openaiError.message);
+      reasoningSteps.push('OpenAI failed, switching to Google AI backup.');
+      try {
+        aiResponse = await googleModel.invoke(history);
+        modelUsed = 'Google AI';
+      } catch (googleError) {
+        console.error('Both AI models failed:', { openaiError: openaiError.message, googleError: googleError.message });
+        throw new Error('Both AI services are currently unavailable');
+      }
+    }
+    
     const aiMessage = new AIMessage(aiResponse.content);
     history.push(aiMessage);
-    reasoningSteps.push('AI model generated response.');
+    reasoningSteps.push(`${modelUsed} generated response.`);
 
     // Emit thinking complete
     if (socketId && global.io) {
