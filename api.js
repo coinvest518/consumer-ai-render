@@ -1,6 +1,6 @@
 const { createClient } = require('@supabase/supabase-js');
 const { ChatOpenAI } = require('@langchain/openai');
-const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
+// const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
 const Stripe = require('stripe');
 const { enhancedLegalSearch } = require('./legalSearch');
@@ -25,15 +25,8 @@ const chatModel = new ChatOpenAI({
   temperature: 0.7,
 });
 
-// Initialize Google AI as backup
+// Google AI removed due to dependency conflicts
 let googleModel = null;
-if (process.env.GOOGLE_AI_API_KEY) {
-  googleModel = new ChatGoogleGenerativeAI({
-    apiKey: process.env.GOOGLE_AI_API_KEY,
-    model: 'gemini-pro',
-    temperature: 0.7,
-  });
-}
 
 // Initialize Stripe
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
@@ -118,11 +111,7 @@ async function processMessage(message, sessionId, socketId = null) {
       try {
         aiResponse = await chatModel.invoke(history);
       } catch (openaiError) {
-        if (googleModel) {
-          aiResponse = await googleModel.invoke(history);
-        } else {
-          throw openaiError;
-        }
+        throw openaiError;
       }
     }
     
