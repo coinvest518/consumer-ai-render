@@ -24,11 +24,14 @@ const chatModel = new ChatOpenAI({
 });
 
 // Initialize Google AI as backup
-const googleModel = new ChatGoogleGenerativeAI({
-  apiKey: process.env.GOOGLE_AI_API_KEY,
-  modelName: 'gemini-pro',
-  temperature: 0.7,
-});
+let googleModel = null;
+if (process.env.GOOGLE_AI_API_KEY) {
+  googleModel = new ChatGoogleGenerativeAI({
+    apiKey: process.env.GOOGLE_AI_API_KEY,
+    model: 'gemini-pro',
+    temperature: 0.7,
+  });
+}
 
 // Initialize Stripe
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
@@ -96,12 +99,17 @@ async function processMessage(message, sessionId, socketId = null) {
     } catch (openaiError) {
       console.log('OpenAI failed, trying Google AI:', openaiError.message);
       reasoningSteps.push('OpenAI failed, switching to Google AI backup.');
-      try {
-        aiResponse = await googleModel.invoke(history);
-        modelUsed = 'Google AI';
-      } catch (googleError) {
-        console.error('Both AI models failed:', { openaiError: openaiError.message, googleError: googleError.message });
-        throw new Error('Both AI services are currently unavailable');
+      if (googleModel) {
+        try {
+          aiResponse = await googleModel.invoke(history);
+          modelUsed = 'Google AI';
+        } catch (googleError) {
+          console.error('Both AI models failed:', { openaiError: openaiError.message, googleError: googleError.message });
+          throw new Error('Both AI services are currently unavailable');
+        }
+      } else {
+        console.error('Google AI not configured, no backup available');
+        throw openaiError;
       }
     }
     
