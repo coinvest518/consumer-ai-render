@@ -4,6 +4,7 @@ const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
 const Stripe = require('stripe');
 const { enhancedLegalSearch } = require('./legalSearch');
+const { executeAgent, routeAgent } = require('./agents');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -56,45 +57,25 @@ function getChatHistory(sessionId) {
   return chatSessions.get(sessionId);
 }
 
-// Simplified message processing without complex agents
+// LangGraph agent processing
 async function processMessage(message, sessionId, socketId = null) {
   try {
     const history = getChatHistory(sessionId);
     const userMessage = new HumanMessage(message);
     history.push(userMessage);
 
-    // Simple agent detection
-    let usedAgent = null;
     let reasoningSteps = [];
+    let usedAgent = routeAgent(message);
+    reasoningSteps.push(`Routed to ${usedAgent} agent`);
     
-    if (message.includes('[Agent Request:')) {
-      const agentMatch = message.match(/\[Agent Request:\s*(\w+)\]/);
-      usedAgent = agentMatch ? agentMatch[1] : null;
-      reasoningSteps.push(`Agent "${usedAgent}" selected based on user input.`);
-      
-      // Emit agent activity if socket available
-      if (socketId && global.io) {
-        global.io.to(socketId).emit('agent-step', {
-          tool: usedAgent,
-          toolInput: message,
-          log: `Using ${usedAgent} agent`,
-          timestamp: new Date().toISOString()
-        });
-      }
-    } else {
-      reasoningSteps.push('Direct AI response without agent.');
-    }
-
-    reasoningSteps.push('Message added to history.');
-    
-    // Search for relevant legal information
-    const legalContext = await enhancedLegalSearch(message);
-    if (legalContext) {
-      const contextMessage = new SystemMessage(
-        `Relevant legal information:\n${legalContext}\n\nUse this information to provide accurate legal guidance.`
-      );
-      history.push(contextMessage);
-      reasoningSteps.push('Added relevant legal context from database.');
+    // Emit agent selection
+    if (socketId && global.io) {
+      global.io.to(socketId).emit('agent-step', {
+        tool: usedAgent,
+        toolInput: message,
+        log: `Using ${usedAgent} agent`,
+        timestamp: new Date().toISOString()
+      });
     }
     
     // Emit thinking start
@@ -103,30 +84,50 @@ async function processMessage(message, sessionId, socketId = null) {
     }
 
     let aiResponse;
-    let modelUsed = 'OpenAI';
     
     try {
-      aiResponse = await chatModel.invoke(history);
-    } catch (openaiError) {
-      console.log('OpenAI failed, trying Google AI:', openaiError.message);
-      reasoningSteps.push('OpenAI failed, switching to Google AI backup.');
-      if (googleModel) {
-        try {
+      // Execute agent
+      const result = await executeAgent(usedAgent, message);
+      
+      const lastMessage = result.messages[result.messages.length - 1];
+      aiResponse = { content: lastMessage.content };
+      
+      // Emit tool results
+      if (result.toolResults && socketId && global.io) {
+        result.toolResults.forEach(toolResult => {
+          global.io.to(socketId).emit('agent-step', {
+            tool: toolResult.tool,
+            toolInput: message,
+            log: toolResult.result,
+            timestamp: new Date().toISOString()
+          });
+        });
+      }
+      
+      reasoningSteps.push(`${usedAgent} agent completed`);
+    } catch (agentError) {
+      console.log('Agent failed, falling back to direct AI:', agentError.message);
+      reasoningSteps.push('Agent failed, using direct AI response');
+      
+      // Fallback to direct AI
+      const legalContext = await enhancedLegalSearch(message);
+      if (legalContext) {
+        history.push(new SystemMessage(`Legal context: ${legalContext}`));
+      }
+      
+      try {
+        aiResponse = await chatModel.invoke(history);
+      } catch (openaiError) {
+        if (googleModel) {
           aiResponse = await googleModel.invoke(history);
-          modelUsed = 'Google AI';
-        } catch (googleError) {
-          console.error('Both AI models failed:', { openaiError: openaiError.message, googleError: googleError.message });
-          throw new Error('Both AI services are currently unavailable');
+        } else {
+          throw openaiError;
         }
-      } else {
-        console.error('Google AI not configured, no backup available');
-        throw openaiError;
       }
     }
     
     const aiMessage = new AIMessage(aiResponse.content);
     history.push(aiMessage);
-    reasoningSteps.push(`${modelUsed} generated response.`);
 
     // Emit thinking complete
     if (socketId && global.io) {
@@ -148,7 +149,6 @@ async function processMessage(message, sessionId, socketId = null) {
   } catch (error) {
     console.error('Error processing message:', error);
     
-    // Emit error if socket available
     if (socketId && global.io) {
       global.io.to(socketId).emit('agent-thinking-error', error.message);
     }
