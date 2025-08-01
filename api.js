@@ -3,6 +3,7 @@ const { ChatOpenAI } = require('@langchain/openai');
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
 const Stripe = require('stripe');
+const { enhancedLegalSearch } = require('./legalSearch');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -85,6 +86,16 @@ async function processMessage(message, sessionId, socketId = null) {
     }
 
     reasoningSteps.push('Message added to history.');
+    
+    // Search for relevant legal information
+    const legalContext = await enhancedLegalSearch(message);
+    if (legalContext) {
+      const contextMessage = new SystemMessage(
+        `Relevant legal information:\n${legalContext}\n\nUse this information to provide accurate legal guidance.`
+      );
+      history.push(contextMessage);
+      reasoningSteps.push('Added relevant legal context from database.');
+    }
     
     // Emit thinking start
     if (socketId && global.io) {
