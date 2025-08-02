@@ -52,13 +52,18 @@ const prompt = ChatPromptTemplate.fromMessages([
   ['human', 'Who should act next? Select one of: {options}'],
 ]);
 
-const formattedPrompt = await prompt.partial({
-  options: [END, ...members].join(', '),
-});
+// Create supervisor function
+async function createSupervisor() {
+  const formattedPrompt = await prompt.partial({
+    options: [END, ...members].join(', '),
+  });
+  
+  return formattedPrompt
+    .pipe(model.bindTools([routingTool], { tool_choice: 'route' }))
+    .pipe((x) => x.tool_calls[0].args);
+}
 
-const supervisorChain = formattedPrompt
-  .pipe(model.bindTools([routingTool], { tool_choice: 'route' }))
-  .pipe((x) => x.tool_calls[0].args);
+let supervisorChain = null;
 
 // Agent nodes
 const { TavilySearchResults } = require('@langchain/community/tools/tavily_search');
@@ -182,7 +187,12 @@ async function trackingAgent(state) {
 
 // Create workflow
 const workflow = new StateGraph(AgentState)
-  .addNode('supervisor', supervisorChain)
+  .addNode('supervisor', async (state) => {
+    if (!supervisorChain) {
+      supervisorChain = await createSupervisor();
+    }
+    return await supervisorChain.invoke(state);
+  })
   .addNode('search', searchAgent)
   .addNode('report', reportAgent)
   .addNode('letter', letterAgent)
@@ -205,4 +215,4 @@ workflow.addEdge(START, 'supervisor');
 
 const graph = workflow.compile();
 
-module.exports = { graph, AgentState };
+module.exports = { graph, AgentState, createSupervisor };
