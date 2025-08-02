@@ -36,6 +36,23 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
 // Memory storage for chat sessions
 const chatSessions = new Map();
 
+// Detect if message needs agents
+function detectAgentNeed(message) {
+  const agentTriggers = [
+    'search', 'find', 'look up', 'research',
+    'dispute', 'letter', 'generate', 'create',
+    'track', 'mail', 'delivery', 'usps',
+    'email', 'send', 'notify',
+    'legal', 'law', 'rights', 'FDCPA', 'FCRA',
+    'report', 'credit', 'analyze', 'review',
+    'calendar', 'remind', 'deadline', 'schedule'
+  ];
+  
+  return agentTriggers.some(trigger => 
+    message.toLowerCase().includes(trigger.toLowerCase())
+  );
+}
+
 // Helper to get or create chat history
 function getChatHistory(sessionId) {
   if (!chatSessions.has(sessionId)) {
@@ -50,74 +67,72 @@ function getChatHistory(sessionId) {
   return chatSessions.get(sessionId);
 }
 
-// LangGraph agent processing
-async function processMessage(message, sessionId, socketId = null) {
+// Smart message processing with agent detection
+async function processMessage(message, sessionId, socketId = null, useAgents = null) {
   try {
     const history = getChatHistory(sessionId);
     const userMessage = new HumanMessage(message);
     history.push(userMessage);
 
     let reasoningSteps = [];
-    let usedAgent = 'supervisor';
-    reasoningSteps.push(`Routed to ${usedAgent} agent`);
+    let usedAgent = 'direct';
     
-    // Emit agent selection
-    if (socketId && global.io) {
-      global.io.to(socketId).emit('agent-step', {
-        tool: usedAgent,
-        toolInput: message,
-        log: `Using ${usedAgent} agent`,
-        timestamp: new Date().toISOString()
-      });
-    }
+    // Determine if agents are needed
+    const needsAgents = useAgents || detectAgentNeed(message);
     
-    // Emit thinking start
-    if (socketId && global.io) {
-      global.io.to(socketId).emit('agent-thinking-start');
-    }
-
-    let aiResponse;
-    
-    try {
-      // Use supervisor graph
-      const result = await graph.invoke({
-        messages: [{ role: 'user', content: message }]
-      });
+    if (needsAgents) {
+      reasoningSteps.push('Agent mode activated');
+      usedAgent = 'supervisor';
       
-      const lastMessage = result.messages[result.messages.length - 1];
-      aiResponse = { content: lastMessage.content };
-      usedAgent = lastMessage.name || 'supervisor';
-      
-      // Emit agent steps
+      // Emit agent selection
       if (socketId && global.io) {
-        result.messages.forEach(msg => {
-          if (msg.name) {
-            global.io.to(socketId).emit('agent-step', {
-              tool: msg.name.replace('Agent', '').toLowerCase(),
-              toolInput: message,
-              log: `${msg.name} completed`,
-              timestamp: new Date().toISOString()
-            });
-          }
+        global.io.to(socketId).emit('agent-step', {
+          tool: 'supervisor',
+          toolInput: message,
+          log: 'Using supervisor agent',
+          timestamp: new Date().toISOString()
         });
       }
       
-      reasoningSteps.push(`Supervisor routed through agents`);
-    } catch (agentError) {
-      console.log('Agent failed, falling back to direct AI:', agentError.message);
-      reasoningSteps.push('Agent failed, using direct AI response');
-      
-      // Fallback to direct AI
-      const legalContext = await enhancedLegalSearch(message);
-      if (legalContext) {
-        history.push(new SystemMessage(`Legal context: ${legalContext}`));
+      // Emit thinking start
+      if (socketId && global.io) {
+        global.io.to(socketId).emit('agent-thinking-start');
       }
-      
+
       try {
+        // Use supervisor graph
+        const result = await graph.invoke({
+          messages: [{ role: 'user', content: message }]
+        });
+        
+        const lastMessage = result.messages[result.messages.length - 1];
+        aiResponse = { content: lastMessage.content };
+        usedAgent = lastMessage.name || 'supervisor';
+        
+        // Emit agent steps
+        if (socketId && global.io) {
+          result.messages.forEach(msg => {
+            if (msg.name) {
+              global.io.to(socketId).emit('agent-step', {
+                tool: msg.name.replace('Agent', '').toLowerCase(),
+                toolInput: message,
+                log: `${msg.name} completed`,
+                timestamp: new Date().toISOString()
+              });
+            }
+          });
+        }
+        
+        reasoningSteps.push('Supervisor routed through agents');
+      } catch (agentError) {
+        console.log('Agent failed, falling back to direct AI:', agentError.message);
+        reasoningSteps.push('Agent failed, using direct AI response');
         aiResponse = await chatModel.invoke(history);
-      } catch (openaiError) {
-        throw openaiError;
       }
+    } else {
+      // Regular chat - direct AI response
+      reasoningSteps.push('Regular chat - no agents needed');
+      aiResponse = await chatModel.invoke(history);
     }
     
     const aiMessage = new AIMessage(aiResponse.content);
@@ -312,13 +327,13 @@ module.exports = async function handler(req, res) {
       if (req.method === 'GET') return res.status(200).json({ status: 'ok' });
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
       
-      const { message, sessionId, socketId } = req.body;
+      const { message, sessionId, socketId, useAgents } = req.body;
       if (!message || !sessionId) {
         return res.status(400).json({ error: 'Missing message or sessionId' });
       }
 
       try {
-        const result = await processMessage(message, sessionId, socketId);
+        const result = await processMessage(message, sessionId, socketId, useAgents);
         return res.status(200).json({ data: result });
       } catch (error) {
         console.error('Chat error:', error);

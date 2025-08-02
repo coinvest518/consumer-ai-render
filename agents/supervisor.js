@@ -116,9 +116,9 @@ async function letterAgent(state) {
 
 async function legalAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const legalInfo = await enhancedLegalSearch(message);
+  // Skip embedding search to save quota
   const response = await model.invoke([
-    new SystemMessage(`Legal context: ${legalInfo}`),
+    new SystemMessage('You are a legal expert specializing in consumer law, FDCPA, and FCRA.'),
     new HumanMessage(message)
   ]);
   return {
