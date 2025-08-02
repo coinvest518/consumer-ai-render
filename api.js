@@ -20,10 +20,10 @@ const supabase = createClient(
   }
 );
 
-// Initialize OpenAI Chat Model with rate limiting
-const chatModel = new ChatOpenAI({
-  openAIApiKey: process.env.OPENAI_API_KEY,
-  modelName: 'gpt-3.5-turbo', // Use cheaper/faster model
+// Initialize Anthropic as primary model
+const chatModel = new ChatAnthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+  model: 'claude-3-haiku-20240307',
   temperature: 0.7,
   maxRetries: 3,
   timeout: 30000,
@@ -31,20 +31,20 @@ const chatModel = new ChatOpenAI({
 
 // Initialize backup models
 let googleModel = null;
-let anthropicModel = null;
+let openaiModel = null;
 
-if (process.env.GOOGLE_API_KEY) {
+if (process.env.GOOGLE_AI_API_KEY) {
   googleModel = new ChatGoogleGenerativeAI({
-    apiKey: process.env.GOOGLE_API_KEY,
+    apiKey: process.env.GOOGLE_AI_API_KEY,
     model: 'gemini-pro',
     temperature: 0.7,
   });
 }
 
-if (process.env.ANTHROPIC_API_KEY) {
-  anthropicModel = new ChatAnthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    model: 'claude-3-haiku-20240307',
+if (process.env.OPENAI_API_KEY) {
+  openaiModel = new ChatOpenAI({
+    openAIApiKey: process.env.OPENAI_API_KEY,
+    modelName: 'gpt-3.5-turbo',
     temperature: 0.7,
   });
 }
@@ -74,42 +74,50 @@ async function processQueue() {
   isProcessing = true;
   const { fn, resolve, reject, useBackup } = requestQueue.shift();
   
-  try {
-    const result = await fn();
-    resolve(result);
-  } catch (error) {
-    console.log('OpenAI failed, trying backups:', error.message);
-    if (!useBackup) {
-      // Try Google AI first
-      if (googleModel) {
-        try {
-          const googleResult = await fn('google');
-          resolve(googleResult);
-          return;
-        } catch (googleError) {
-          console.log('Google AI failed, trying Anthropic:', googleError.message);
-        }
+  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const maxRetries = 3;
+  let attempts = 0;
+  let lastError = null;
+
+  while (attempts < maxRetries) {
+    try {
+      // Exponential backoff between retries
+      if (attempts > 0) {
+        const backoffMs = Math.min(1000 * Math.pow(2, attempts), 10000);
+        await delay(backoffMs);
       }
-      
-      // Try Anthropic as final backup
-      if (anthropicModel) {
-        try {
-          const anthropicResult = await fn('anthropic');
-          resolve(anthropicResult);
-          return;
-        } catch (anthropicError) {
-          console.error('All AI models failed:', { openai: error.message, google: googleError?.message, anthropic: anthropicError.message });
-        }
+
+      if (attempts === 0) {
+        // First try Anthropic
+        const result = await fn();
+        resolve(result);
+        break;
+      } else if (attempts === 1 && googleModel && !useBackup) {
+        // Second try Google AI
+        const googleResult = await fn('google');
+        resolve(googleResult);
+        break;
+      } else if (attempts === 2 && openaiModel && !useBackup) {
+        // Last try OpenAI with increased delay
+        await delay(2000); // Extra delay for OpenAI due to stricter rate limits
+        const openaiResult = await fn('openai');
+        resolve(openaiResult);
+        break;
       }
+    } catch (error) {
+      lastError = error;
+      console.log(`Attempt ${attempts + 1} failed:`, error.message);
+      attempts++;
       
-      reject(new Error('All AI services are currently unavailable'));
-    } else {
-      reject(error);
+      if (attempts === maxRetries) {
+        reject(new Error(useBackup ? lastError.message : 'All AI services are currently unavailable'));
+      }
     }
-  } finally {
-    isProcessing = false;
-    setTimeout(() => processQueue(), 1000);
   }
+
+  isProcessing = false;
+  // Increased delay between queue processing
+  setTimeout(() => processQueue(), 2000);
 }
 
 // Detect if message needs agents
@@ -206,17 +214,17 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
         aiResponse = await processWithRateLimit((useBackup) => {
           let model = chatModel;
           if (useBackup === 'google' && googleModel) model = googleModel;
-          if (useBackup === 'anthropic' && anthropicModel) model = anthropicModel;
+          if (useBackup === 'openai' && openaiModel) model = openaiModel;
           return model.invoke(history);
         });
       }
     } else {
-      // Regular chat - use OpenAI with Google AI backup
-      reasoningSteps.push('Regular chat - using OpenAI with backup');
+      // Regular chat - use Anthropic with Google AI backup
+      reasoningSteps.push('Regular chat - using Anthropic with backup');
       aiResponse = await processWithRateLimit((useBackup) => {
         let model = chatModel;
         if (useBackup === 'google' && googleModel) model = googleModel;
-        if (useBackup === 'anthropic' && anthropicModel) model = anthropicModel;
+        if (useBackup === 'openai' && openaiModel) model = openaiModel;
         return model.invoke(history);
       });
     }

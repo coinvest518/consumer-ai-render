@@ -16,33 +16,33 @@ const AgentState = Annotation.Root({
   }),
 });
 
-// Initialize models with backup
-const model = new ChatOpenAI({
-  openAIApiKey: process.env.OPENAI_API_KEY,
-  modelName: 'gpt-3.5-turbo',
+// Initialize models with Anthropic as primary
+const model = new ChatAnthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+  model: 'claude-3-haiku-20240307',
   temperature: 0.7,
   maxRetries: 2,
   timeout: 20000,
 });
 
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
-const { ChatAnthropic } = require('@langchain/anthropic');
+const { ChatOpenAI } = require('@langchain/openai');
 
 let googleBackup = null;
-let anthropicBackup = null;
+let openaiBackup = null;
 
-if (process.env.GOOGLE_API_KEY) {
+if (process.env.GOOGLE_AI_API_KEY) {
   googleBackup = new ChatGoogleGenerativeAI({
-    apiKey: process.env.GOOGLE_API_KEY,
+    apiKey: process.env.GOOGLE_AI_API_KEY,
     model: 'gemini-pro',
     temperature: 0.7,
   });
 }
 
-if (process.env.ANTHROPIC_API_KEY) {
-  anthropicBackup = new ChatAnthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    model: 'claude-3-haiku-20240307',
+if (process.env.OPENAI_API_KEY) {
+  openaiBackup = new ChatOpenAI({
+    openAIApiKey: process.env.OPENAI_API_KEY,
+    modelName: 'gpt-3.5-turbo',
     temperature: 0.7,
   });
 }
@@ -53,19 +53,19 @@ async function callAI(messages) {
     await delay(500);
     return await model.invoke(messages);
   } catch (error) {
-    console.log('OpenAI failed, trying Google AI:', error.message);
+    console.log('Anthropic failed, trying Google AI:', error.message);
     if (googleBackup) {
       try {
         return await googleBackup.invoke(messages);
       } catch (googleError) {
-        console.log('Google AI failed, trying Anthropic:', googleError.message);
+        console.log('Google AI failed, trying OpenAI:', googleError.message);
       }
     }
     
-    if (anthropicBackup) {
+    if (openaiBackup) {
       try {
-        return await anthropicBackup.invoke(messages);
-      } catch (anthropicError) {
+        return await openaiBackup.invoke(messages);
+      } catch (openaiError) {
         console.error('All AI models failed');
       }
     }
@@ -264,6 +264,8 @@ workflow.addConditionalEdges(
 
 workflow.addEdge(START, 'supervisor');
 
-const graph = workflow.compile();
+const graph = workflow.compile({
+  recursionLimit: 10 // Reduce from default 25 to prevent excessive API calls
+});
 
 module.exports = { graph, AgentState };

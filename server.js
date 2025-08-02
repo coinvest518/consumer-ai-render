@@ -6,6 +6,17 @@ const http = require('http');
 const { Server } = require('socket.io');
 const apiHandler = require('./api');
 
+// Rate limiter for API endpoints
+const rateLimit = require('express-rate-limit');
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute window
+  max: 30, // Limit each IP to 30 requests per minute
+  message: 'Too many requests from this IP, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // Load environment variables
 dotenv.config();
 
@@ -56,8 +67,13 @@ app.post('/api/storage/webhook', express.raw({ type: 'application/json' }), (req
 // For all other routes, parse JSON bodies. This must come *after* the raw webhook routes.
 app.use(express.json());
 
-// Route all other API requests to the handler
-app.use('/api', (req, res) => {
+// Apply rate limiting to all API routes except webhooks
+app.use('/api', apiLimiter, (req, res) => {
+  // Skip rate limiting for webhook endpoints
+  if (req.url === '/api/stripe-webhook' || req.url === '/api/storage/webhook') {
+    return apiHandler(req, res);
+  }
+  
   // Modify the URL to match what the API handler expects by removing the /api prefix
   req.url = req.url.replace(/^\/api/, '');
   if (req.url === '') req.url = '/';
