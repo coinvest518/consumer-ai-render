@@ -18,11 +18,13 @@ const supabase = createClient(
   }
 );
 
-// Initialize OpenAI Chat Model
+// Initialize OpenAI Chat Model with rate limiting
 const chatModel = new ChatOpenAI({
   openAIApiKey: process.env.OPENAI_API_KEY,
-  modelName: 'gpt-4',
+  modelName: 'gpt-3.5-turbo', // Use cheaper/faster model
   temperature: 0.7,
+  maxRetries: 3,
+  timeout: 30000,
 });
 
 // Google AI removed due to dependency conflicts
@@ -35,6 +37,35 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
 
 // Memory storage for chat sessions
 const chatSessions = new Map();
+
+// Rate limiting
+const requestQueue = [];
+let isProcessing = false;
+
+async function processWithRateLimit(fn) {
+  return new Promise((resolve, reject) => {
+    requestQueue.push({ fn, resolve, reject });
+    processQueue();
+  });
+}
+
+async function processQueue() {
+  if (isProcessing || requestQueue.length === 0) return;
+  
+  isProcessing = true;
+  const { fn, resolve, reject } = requestQueue.shift();
+  
+  try {
+    const result = await fn();
+    resolve(result);
+  } catch (error) {
+    reject(error);
+  } finally {
+    isProcessing = false;
+    // Wait 1 second between requests
+    setTimeout(() => processQueue(), 1000);
+  }
+}
 
 // Detect if message needs agents
 function detectAgentNeed(message) {
@@ -127,12 +158,12 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       } catch (agentError) {
         console.log('Agent failed, falling back to direct AI:', agentError.message);
         reasoningSteps.push('Agent failed, using direct AI response');
-        aiResponse = await chatModel.invoke(history);
+        aiResponse = await processWithRateLimit(() => chatModel.invoke(history));
       }
     } else {
-      // Regular chat - use OpenAI only when user explicitly chats
-      reasoningSteps.push('Regular chat - using OpenAI');
-      aiResponse = await chatModel.invoke(history);
+      // Regular chat - use OpenAI with rate limiting
+      reasoningSteps.push('Regular chat - using OpenAI with rate limiting');
+      aiResponse = await processWithRateLimit(() => chatModel.invoke(history));
     }
     
     const aiMessage = new AIMessage(aiResponse.content);
