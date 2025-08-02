@@ -194,4 +194,4 @@ workflow.addEdge(START, 'supervisor');
 
 const graph = workflow.compile();
 
-module.exports = { graph, AgentState, createSupervisor };
+module.exports = { graph, AgentState };
