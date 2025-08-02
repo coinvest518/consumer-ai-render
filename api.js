@@ -1,6 +1,7 @@
 const { createClient } = require('@supabase/supabase-js');
 const { ChatOpenAI } = require('@langchain/openai');
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
+const { ChatGoogle } = require('@langchain/google-gauth');
 const { ChatAnthropic } = require('@langchain/anthropic');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
 const Stripe = require('stripe');
@@ -32,9 +33,9 @@ const chatModel = new ChatOpenAI({
 let googleModel = null;
 let anthropicModel = null;
 
-if (process.env.GOOGLE_AI_API_KEY) {
+if (process.env.GOOGLE_API_KEY) {
   googleModel = new ChatGoogleGenerativeAI({
-    apiKey: process.env.GOOGLE_AI_API_KEY,
+    apiKey: process.env.GOOGLE_API_KEY,
     model: 'gemini-pro',
     temperature: 0.7,
   });

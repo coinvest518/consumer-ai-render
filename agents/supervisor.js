@@ -31,9 +31,9 @@ const { ChatAnthropic } = require('@langchain/anthropic');
 let googleBackup = null;
 let anthropicBackup = null;
 
-if (process.env.GOOGLE_AI_API_KEY) {
+if (process.env.GOOGLE_API_KEY) {
   googleBackup = new ChatGoogleGenerativeAI({
-    apiKey: process.env.GOOGLE_AI_API_KEY,
+    apiKey: process.env.GOOGLE_API_KEY,
     model: 'gemini-pro',
     temperature: 0.7,
   });

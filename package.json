@@ -13,26 +13,28 @@
   "license": "ISC",
   "dependencies": {
     "@datastax/astra-db-ts": "^1.5.0",
-    "@langchain/anthropic": "^0.2.16",
-    "@langchain/community": "^0.2.28",
-    "@langchain/core": "^0.2.31",
-    "@langchain/google-genai": "^0.2.16",
-    "@langchain/langgraph": "^0.2.27",
-    "@langchain/openai": "^0.2.8",
+    "@langchain/anthropic": "^0.3.25",
+    "@langchain/community": "^0.3.15",
+    "@langchain/core": "^0.3.15",
+    "@langchain/google-gauth": "^0.2.16",
+    "@langchain/google-genai": "^0.1.2",
+    "@langchain/google-gauth": "^0.1.0",
+    "@langchain/langgraph": "^0.2.19",
+    "@langchain/openai": "^0.3.12",
     "@supabase/supabase-js": "^2.50.5",
     "axios": "^1.11.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.21.2",
     "googleapis": "^154.0.0",
-    "langchain": "^0.2.19",
+    "langchain": "^0.3.5",
     "nodemailer": "^6.9.9",
     "socket.io": "^4.8.1",
     "stripe": "^14.18.0"
   },
   "resolutions": {
     "@datastax/astra-db-ts": "1.5.0",
-    "@langchain/core": "0.2.31"
+    "@langchain/core": "0.3.15"
   },
   "engines": {
     "node": "18.x"
