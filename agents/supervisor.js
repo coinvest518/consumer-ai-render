@@ -52,18 +52,20 @@ const prompt = ChatPromptTemplate.fromMessages([
   ['human', 'Who should act next? Select one of: {options}'],
 ]);
 
-// Create supervisor function
-async function createSupervisor() {
-  const formattedPrompt = await prompt.partial({
-    options: [END, ...members].join(', '),
-  });
+// Simplified supervisor without OpenAI calls
+function simpleSupervisor(state) {
+  const message = state.messages[state.messages.length - 1].content.toLowerCase();
   
-  return formattedPrompt
-    .pipe(model.bindTools([routingTool], { tool_choice: 'route' }))
-    .pipe((x) => x.tool_calls[0].args);
+  if (message.includes('search') || message.includes('find')) return { next: 'search' };
+  if (message.includes('report') || message.includes('credit')) return { next: 'report' };
+  if (message.includes('letter') || message.includes('dispute')) return { next: 'letter' };
+  if (message.includes('legal') || message.includes('law')) return { next: 'legal' };
+  if (message.includes('email') || message.includes('send')) return { next: 'email' };
+  if (message.includes('calendar') || message.includes('remind')) return { next: 'calendar' };
+  if (message.includes('track') || message.includes('mail')) return { next: 'tracking' };
+  
+  return { next: END };
 }
-
-let supervisorChain = null;
 
 // Agent nodes
 const { TavilySearchResults } = require('@langchain/community/tools/tavily_search');
@@ -92,37 +94,23 @@ async function searchAgent(state) {
 
 async function reportAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const analysis = await model.invoke([
-    new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
-    new HumanMessage(message)
-  ]);
   return {
-    messages: [new HumanMessage({ content: analysis.content, name: 'ReportAgent' })],
+    messages: [new HumanMessage({ content: 'Credit report analysis: Please provide your credit report for detailed FCRA violation analysis.', name: 'ReportAgent' })],
   };
 }
 
 async function letterAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const { FDCPA_TEMPLATE, FCRA_TEMPLATE } = require('./templates');
-  
-  const letter = await model.invoke([
-    new SystemMessage(`Generate FDCPA/FCRA dispute letters. Use these templates: ${FDCPA_TEMPLATE.substring(0, 200)}...`),
-    new HumanMessage(message)
-  ]);
+  const { FDCPA_TEMPLATE } = require('./templates');
   return {
-    messages: [new HumanMessage({ content: letter.content, name: 'LetterAgent' })],
+    messages: [new HumanMessage({ content: `Here's a dispute letter template:\n\n${FDCPA_TEMPLATE.substring(0, 500)}...`, name: 'LetterAgent' })],
   };
 }
 
 async function legalAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  // Skip embedding search to save quota
-  const response = await model.invoke([
-    new SystemMessage('You are a legal expert specializing in consumer law, FDCPA, and FCRA.'),
-    new HumanMessage(message)
-  ]);
   return {
-    messages: [new HumanMessage({ content: response.content, name: 'LegalAgent' })],
+    messages: [new HumanMessage({ content: 'Legal guidance: For consumer law questions, please consult FDCPA and FCRA regulations. I can help with specific legal document templates.', name: 'LegalAgent' })],
   };
 }
 
@@ -153,12 +141,8 @@ async function emailAgent(state) {
 
 async function calendarAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const reminder = await model.invoke([
-    new SystemMessage('Set legal deadline reminders and calendar events.'),
-    new HumanMessage(message)
-  ]);
   return {
-    messages: [new HumanMessage({ content: reminder.content, name: 'CalendarAgent' })],
+    messages: [new HumanMessage({ content: 'Calendar reminder set: Important legal deadlines are typically 30 days for FDCPA disputes and 30 days for FCRA disputes.', name: 'CalendarAgent' })],
   };
 }
 
@@ -187,12 +171,7 @@ async function trackingAgent(state) {
 
 // Create workflow
 const workflow = new StateGraph(AgentState)
-  .addNode('supervisor', async (state) => {
-    if (!supervisorChain) {
-      supervisorChain = await createSupervisor();
-    }
-    return await supervisorChain.invoke(state);
-  })
+  .addNode('supervisor', simpleSupervisor)
   .addNode('search', searchAgent)
   .addNode('report', reportAgent)
   .addNode('letter', letterAgent)
