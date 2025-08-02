@@ -6,9 +6,28 @@ if (process.env.ASTRA_DB_APPLICATION_TOKEN && process.env.ASTRA_DB_API_ENDPOINT)
   astraClient = new DataAPIClient(process.env.ASTRA_DB_APPLICATION_TOKEN);
 }
 
-// Disabled embedding to save OpenAI quota
+// Generate embedding using OpenAI
 async function generateEmbedding(text) {
-  return null;
+  if (!process.env.OPENAI_API_KEY) return null;
+  
+  try {
+    const response = await fetch('https://api.openai.com/v1/embeddings', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        input: text,
+        model: 'text-embedding-ada-002'
+      })
+    });
+    const data = await response.json();
+    return data.data[0].embedding;
+  } catch (error) {
+    console.error('Embedding generation failed:', error);
+    return null;
+  }
 }
 
 // Extract legal keywords from user question
@@ -27,7 +46,7 @@ function extractLegalKeywords(question) {
   return found.length > 0 ? found : [question];
 }
 
-// Simplified legal search without embeddings
+// Enhanced AstraDB search function
 async function enhancedLegalSearch(userQuestion) {
   if (!astraClient || !process.env.ASTRA_DB_API_ENDPOINT) {
     console.log('AstraDB not configured, skipping legal search');
@@ -39,14 +58,29 @@ async function enhancedLegalSearch(userQuestion) {
     const collection = db.collection('legal_documents');
     
     const searchTerms = extractLegalKeywords(userQuestion);
+    const searches = [];
     
-    // Simple text-based search without embeddings
-    const results = await collection.find(
-      { $or: searchTerms.map(term => ({ text: { $regex: term, $options: 'i' } })) },
-      { limit: 5 }
-    );
+    // Multiple targeted searches
+    for (const term of searchTerms.slice(0, 3)) { // Limit to 3 searches
+      const embedding = await generateEmbedding(term);
+      if (embedding) {
+        searches.push(
+          collection.find({}, {
+            sort: { $vector: embedding },
+            limit: 5
+          })
+        );
+      }
+    }
     
-    return results.map(doc => {
+    if (searches.length === 0) return '';
+    
+    // Combine and deduplicate results
+    const allResults = await Promise.all(searches);
+    const combinedResults = allResults.flat().slice(0, 10);
+    
+    // Format results for AI context
+    return combinedResults.map(doc => {
       const data = doc.data || doc;
       return `${data.case_name || data.title || 'Legal Document'}: ${data.summary || data.text || ''}`;
     }).join('\n\n');

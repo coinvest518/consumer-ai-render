@@ -130,8 +130,8 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
         aiResponse = await chatModel.invoke(history);
       }
     } else {
-      // Regular chat - direct AI response
-      reasoningSteps.push('Regular chat - no agents needed');
+      // Regular chat - use OpenAI only when user explicitly chats
+      reasoningSteps.push('Regular chat - using OpenAI');
       aiResponse = await chatModel.invoke(history);
     }
     
@@ -320,6 +320,18 @@ module.exports = async function handler(req, res) {
         return res.status(400).json({ error: err.message });
       }
       return;
+    }
+
+    // Test endpoint
+    if (path === 'test') {
+      return res.status(200).json({ 
+        message: 'Backend is working!',
+        timestamp: new Date().toISOString(),
+        env: {
+          hasOpenAI: !!process.env.OPENAI_API_KEY,
+          hasTavily: !!process.env.TAVILY_API_KEY
+        }
+      });
     }
 
     // Chat endpoint - simplified without complex agents

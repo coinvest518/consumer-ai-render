@@ -94,23 +94,37 @@ async function searchAgent(state) {
 
 async function reportAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
+  const analysis = await model.invoke([
+    new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
+    new HumanMessage(message)
+  ]);
   return {
-    messages: [new HumanMessage({ content: 'Credit report analysis: Please provide your credit report for detailed FCRA violation analysis.', name: 'ReportAgent' })],
+    messages: [new HumanMessage({ content: analysis.content, name: 'ReportAgent' })],
   };
 }
 
 async function letterAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const { FDCPA_TEMPLATE } = require('./templates');
+  const { FDCPA_TEMPLATE, FCRA_TEMPLATE } = require('./templates');
+  
+  const letter = await model.invoke([
+    new SystemMessage(`Generate FDCPA/FCRA dispute letters. Use these templates: ${FDCPA_TEMPLATE.substring(0, 200)}...`),
+    new HumanMessage(message)
+  ]);
   return {
-    messages: [new HumanMessage({ content: `Here's a dispute letter template:\n\n${FDCPA_TEMPLATE.substring(0, 500)}...`, name: 'LetterAgent' })],
+    messages: [new HumanMessage({ content: letter.content, name: 'LetterAgent' })],
   };
 }
 
 async function legalAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
+  const legalInfo = await enhancedLegalSearch(message);
+  const response = await model.invoke([
+    new SystemMessage(`Legal context: ${legalInfo}`),
+    new HumanMessage(message)
+  ]);
   return {
-    messages: [new HumanMessage({ content: 'Legal guidance: For consumer law questions, please consult FDCPA and FCRA regulations. I can help with specific legal document templates.', name: 'LegalAgent' })],
+    messages: [new HumanMessage({ content: response.content, name: 'LegalAgent' })],
   };
 }
 
@@ -141,8 +155,12 @@ async function emailAgent(state) {
 
 async function calendarAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
+  const reminder = await model.invoke([
+    new SystemMessage('Set legal deadline reminders and calendar events.'),
+    new HumanMessage(message)
+  ]);
   return {
-    messages: [new HumanMessage({ content: 'Calendar reminder set: Important legal deadlines are typically 30 days for FDCPA disputes and 30 days for FCRA disputes.', name: 'CalendarAgent' })],
+    messages: [new HumanMessage({ content: reminder.content, name: 'CalendarAgent' })],
   };
 }
 
