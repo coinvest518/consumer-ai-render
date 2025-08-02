@@ -4,7 +4,7 @@ const { ChatOpenAI } = require('@langchain/openai');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
 const Stripe = require('stripe');
 const { enhancedLegalSearch } = require('./legalSearch');
-const { executeAgent, routeAgent } = require('./agents');
+const { graph } = require('./agents/supervisor');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -58,7 +58,7 @@ async function processMessage(message, sessionId, socketId = null) {
     history.push(userMessage);
 
     let reasoningSteps = [];
-    let usedAgent = routeAgent(message);
+    let usedAgent = 'supervisor';
     reasoningSteps.push(`Routed to ${usedAgent} agent`);
     
     // Emit agent selection
@@ -79,25 +79,30 @@ async function processMessage(message, sessionId, socketId = null) {
     let aiResponse;
     
     try {
-      // Execute agent
-      const result = await executeAgent(usedAgent, message);
+      // Use supervisor graph
+      const result = await graph.invoke({
+        messages: [{ role: 'user', content: message }]
+      });
       
       const lastMessage = result.messages[result.messages.length - 1];
       aiResponse = { content: lastMessage.content };
+      usedAgent = lastMessage.name || 'supervisor';
       
-      // Emit tool results
-      if (result.toolResults && socketId && global.io) {
-        result.toolResults.forEach(toolResult => {
-          global.io.to(socketId).emit('agent-step', {
-            tool: toolResult.tool,
-            toolInput: message,
-            log: toolResult.result,
-            timestamp: new Date().toISOString()
-          });
+      // Emit agent steps
+      if (socketId && global.io) {
+        result.messages.forEach(msg => {
+          if (msg.name) {
+            global.io.to(socketId).emit('agent-step', {
+              tool: msg.name.replace('Agent', '').toLowerCase(),
+              toolInput: message,
+              log: `${msg.name} completed`,
+              timestamp: new Date().toISOString()
+            });
+          }
         });
       }
       
-      reasoningSteps.push(`${usedAgent} agent completed`);
+      reasoningSteps.push(`Supervisor routed through agents`);
     } catch (agentError) {
       console.log('Agent failed, falling back to direct AI:', agentError.message);
       reasoningSteps.push('Agent failed, using direct AI response');
