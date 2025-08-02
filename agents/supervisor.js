@@ -16,14 +16,63 @@ const AgentState = Annotation.Root({
   }),
 });
 
-// Initialize model with rate limiting
+// Initialize models with backup
 const model = new ChatOpenAI({
   openAIApiKey: process.env.OPENAI_API_KEY,
-  modelName: 'gpt-3.5-turbo', // Cheaper model
+  modelName: 'gpt-3.5-turbo',
   temperature: 0.7,
   maxRetries: 2,
   timeout: 20000,
 });
+
+const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
+const { ChatAnthropic } = require('@langchain/anthropic');
+
+let googleBackup = null;
+let anthropicBackup = null;
+
+if (process.env.GOOGLE_AI_API_KEY) {
+  googleBackup = new ChatGoogleGenerativeAI({
+    apiKey: process.env.GOOGLE_AI_API_KEY,
+    model: 'gemini-pro',
+    temperature: 0.7,
+  });
+}
+
+if (process.env.ANTHROPIC_API_KEY) {
+  anthropicBackup = new ChatAnthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    model: 'claude-3-haiku-20240307',
+    temperature: 0.7,
+  });
+}
+
+// AI call with triple backup
+async function callAI(messages) {
+  try {
+    await delay(500);
+    return await model.invoke(messages);
+  } catch (error) {
+    console.log('OpenAI failed, trying Google AI:', error.message);
+    if (googleBackup) {
+      try {
+        return await googleBackup.invoke(messages);
+      } catch (googleError) {
+        console.log('Google AI failed, trying Anthropic:', googleError.message);
+      }
+    }
+    
+    if (anthropicBackup) {
+      try {
+        return await anthropicBackup.invoke(messages);
+      } catch (anthropicError) {
+        console.error('All AI models failed');
+      }
+    }
+    
+    throw new Error('All AI services unavailable');
+  }
+}
 
 // Simple delay function
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -99,8 +148,7 @@ async function searchAgent(state) {
 
 async function reportAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  await delay(500); // Rate limit
-  const analysis = await model.invoke([
+  const analysis = await callAI([
     new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
     new HumanMessage(message)
   ]);
@@ -113,8 +161,7 @@ async function letterAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
   const { FDCPA_TEMPLATE, FCRA_TEMPLATE } = require('./templates');
   
-  await delay(500); // Rate limit
-  const letter = await model.invoke([
+  const letter = await callAI([
     new SystemMessage(`Generate FDCPA/FCRA dispute letters. Use these templates: ${FDCPA_TEMPLATE.substring(0, 200)}...`),
     new HumanMessage(message)
   ]);
@@ -126,8 +173,7 @@ async function letterAgent(state) {
 async function legalAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
   const legalInfo = await enhancedLegalSearch(message);
-  await delay(500); // Rate limit
-  const response = await model.invoke([
+  const response = await callAI([
     new SystemMessage(`Legal context: ${legalInfo}`),
     new HumanMessage(message)
   ]);
@@ -163,8 +209,7 @@ async function emailAgent(state) {
 
 async function calendarAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  await delay(500); // Rate limit
-  const reminder = await model.invoke([
+  const reminder = await callAI([
     new SystemMessage('Set legal deadline reminders and calendar events.'),
     new HumanMessage(message)
   ]);
