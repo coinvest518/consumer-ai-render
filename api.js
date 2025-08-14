@@ -31,20 +31,11 @@ const chatModel = new ChatAnthropic({
 
 // Initialize backup models
 let googleModel = null;
-let openaiModel = null;
 
 if (process.env.GOOGLE_AI_API_KEY) {
   googleModel = new ChatGoogleGenerativeAI({
     apiKey: process.env.GOOGLE_AI_API_KEY,
     model: 'gemini-pro',
-    temperature: 0.7,
-  });
-}
-
-if (process.env.OPENAI_API_KEY) {
-  openaiModel = new ChatOpenAI({
-    openAIApiKey: process.env.OPENAI_API_KEY,
-    modelName: 'gpt-3.5-turbo',
     temperature: 0.7,
   });
 }
@@ -74,50 +65,42 @@ async function processQueue() {
   isProcessing = true;
   const { fn, resolve, reject, useBackup } = requestQueue.shift();
   
-  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-  const maxRetries = 3;
-  let attempts = 0;
-  let lastError = null;
-
-  while (attempts < maxRetries) {
-    try {
-      // Exponential backoff between retries
-      if (attempts > 0) {
-        const backoffMs = Math.min(1000 * Math.pow(2, attempts), 10000);
-        await delay(backoffMs);
+  try {
+    const result = await fn();
+    resolve(result);
+  } catch (error) {
+    console.log('Anthropic failed, trying backups:', error.message);
+    if (!useBackup) {
+      // Try Google AI first
+      if (googleModel) {
+        try {
+          const googleResult = await fn('google');
+          resolve(googleResult);
+          return;
+        } catch (googleError) {
+          console.log('Google AI failed, trying OpenAI:', googleError.message);
+        }
       }
-
-      if (attempts === 0) {
-        // First try Anthropic
-        const result = await fn();
-        resolve(result);
-        break;
-      } else if (attempts === 1 && googleModel && !useBackup) {
-        // Second try Google AI
-        const googleResult = await fn('google');
-        resolve(googleResult);
-        break;
-      } else if (attempts === 2 && openaiModel && !useBackup) {
-        // Last try OpenAI with increased delay
-        await delay(2000); // Extra delay for OpenAI due to stricter rate limits
-        const openaiResult = await fn('openai');
-        resolve(openaiResult);
-        break;
-      }
-    } catch (error) {
-      lastError = error;
-      console.log(`Attempt ${attempts + 1} failed:`, error.message);
-      attempts++;
       
-      if (attempts === maxRetries) {
-        reject(new Error(useBackup ? lastError.message : 'All AI services are currently unavailable'));
+      // Try OpenAI as final backup
+      if (openaiModel) {
+        try {
+          const openaiResult = await fn('openai');
+          resolve(openaiResult);
+          return;
+        } catch (openaiError) {
+          console.error('All AI models failed:', { anthropic: error.message, google: googleError?.message, openai: openaiError.message });
+        }
       }
+      
+      reject(new Error('All AI services are currently unavailable'));
+    } else {
+      reject(error);
     }
+  } finally {
+    isProcessing = false;
+    setTimeout(() => processQueue(), 1000);
   }
-
-  isProcessing = false;
-  // Increased delay between queue processing
-  setTimeout(() => processQueue(), 2000);
 }
 
 // Detect if message needs agents
@@ -214,7 +197,6 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
         aiResponse = await processWithRateLimit((useBackup) => {
           let model = chatModel;
           if (useBackup === 'google' && googleModel) model = googleModel;
-          if (useBackup === 'openai' && openaiModel) model = openaiModel;
           return model.invoke(history);
         });
       }
@@ -224,7 +206,6 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       aiResponse = await processWithRateLimit((useBackup) => {
         let model = chatModel;
         if (useBackup === 'google' && googleModel) model = googleModel;
-        if (useBackup === 'openai' && openaiModel) model = openaiModel;
         return model.invoke(history);
       });
     }
@@ -422,7 +403,8 @@ module.exports = async function handler(req, res) {
         message: 'Backend is working!',
         timestamp: new Date().toISOString(),
         env: {
-          hasOpenAI: !!process.env.OPENAI_API_KEY,
+          hasAnthropic: !!process.env.ANTHROPIC_API_KEY,
+          hasGoogleAI: !!process.env.GOOGLE_AI_API_KEY,
           hasTavily: !!process.env.TAVILY_API_KEY
         }
       });

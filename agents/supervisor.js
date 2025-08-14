@@ -26,10 +26,8 @@ const model = new ChatAnthropic({
 });
 
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
-const { ChatOpenAI } = require('@langchain/openai');
 
 let googleBackup = null;
-let openaiBackup = null;
 
 if (process.env.GOOGLE_AI_API_KEY) {
   googleBackup = new ChatGoogleGenerativeAI({
@@ -39,15 +37,7 @@ if (process.env.GOOGLE_AI_API_KEY) {
   });
 }
 
-if (process.env.OPENAI_API_KEY) {
-  openaiBackup = new ChatOpenAI({
-    openAIApiKey: process.env.OPENAI_API_KEY,
-    modelName: 'gpt-3.5-turbo',
-    temperature: 0.7,
-  });
-}
-
-// AI call with triple backup
+// AI call with backup
 async function callAI(messages) {
   try {
     await delay(500);
@@ -58,15 +48,7 @@ async function callAI(messages) {
       try {
         return await googleBackup.invoke(messages);
       } catch (googleError) {
-        console.log('Google AI failed, trying OpenAI:', googleError.message);
-      }
-    }
-    
-    if (openaiBackup) {
-      try {
-        return await openaiBackup.invoke(messages);
-      } catch (openaiError) {
-        console.error('All AI models failed');
+        console.error('All AI models failed:', { anthropic: error.message, google: googleError.message });
       }
     }
     
