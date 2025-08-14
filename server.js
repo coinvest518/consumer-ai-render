@@ -6,16 +6,35 @@ const http = require('http');
 const { Server } = require('socket.io');
 const apiHandler = require('./api');
 
-// Rate limiter for API endpoints
-const rateLimit = require('express-rate-limit');
+// Simple rate limiter implementation (fallback)
+let rateLimitMap = new Map();
 
-const apiLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute window
-  max: 30, // Limit each IP to 30 requests per minute
-  message: 'Too many requests from this IP, please try again later',
-  standardHeaders: true,
-  legacyHeaders: false,
-});
+const apiLimiter = (req, res, next) => {
+  const ip = req.ip || req.connection.remoteAddress;
+  const now = Date.now();
+  const windowMs = 60 * 1000; // 1 minute
+  const max = 30; // 30 requests per minute
+  
+  if (!rateLimitMap.has(ip)) {
+    rateLimitMap.set(ip, { count: 1, resetTime: now + windowMs });
+    return next();
+  }
+  
+  const data = rateLimitMap.get(ip);
+  if (now > data.resetTime) {
+    rateLimitMap.set(ip, { count: 1, resetTime: now + windowMs });
+    return next();
+  }
+  
+  if (data.count >= max) {
+    return res.status(429).json({ 
+      error: 'Too many requests from this IP, please try again later' 
+    });
+  }
+  
+  data.count++;
+  next();
+};
 
 // Load environment variables
 dotenv.config();

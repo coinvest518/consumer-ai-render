@@ -1,8 +1,21 @@
 const { StateGraph, Annotation, END, START } = require('@langchain/langgraph');
-const { ChatOpenAI } = require('@langchain/openai');
 const { ChatPromptTemplate, MessagesPlaceholder } = require('@langchain/core/prompts');
 const { HumanMessage, SystemMessage } = require('@langchain/core/messages');
 const { z } = require('zod');
+
+// Import AI models with error handling
+let ChatAnthropic, ChatGoogleGenerativeAI;
+try {
+  ChatAnthropic = require('@langchain/anthropic').ChatAnthropic;
+} catch (error) {
+  console.warn('ChatAnthropic not available:', error.message);
+}
+
+try {
+  ChatGoogleGenerativeAI = require('@langchain/google-genai').ChatGoogleGenerativeAI;
+} catch (error) {
+  console.warn('ChatGoogleGenerativeAI not available:', error.message);
+}
 
 // Define state
 const AgentState = Annotation.Root({
@@ -16,43 +29,62 @@ const AgentState = Annotation.Root({
   }),
 });
 
-// Initialize models with Anthropic as primary
-const model = new ChatAnthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-  model: 'claude-3-haiku-20240307',
-  temperature: 0.7,
-  maxRetries: 2,
-  timeout: 20000,
-});
-
-const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
+// Initialize models with Anthropic as primary (with validation)
+let model = null;
+if (process.env.ANTHROPIC_API_KEY && ChatAnthropic) {
+  try {
+    model = new ChatAnthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      model: 'claude-3-haiku-20240307',
+      temperature: 0.7,
+      maxRetries: 2,
+      timeout: 20000,
+    });
+  } catch (error) {
+    console.warn('Failed to initialize ChatAnthropic:', error.message);
+  }
+}
 
 let googleBackup = null;
 
-if (process.env.GOOGLE_AI_API_KEY) {
-  googleBackup = new ChatGoogleGenerativeAI({
-    apiKey: process.env.GOOGLE_AI_API_KEY,
-    model: 'gemini-pro',
-    temperature: 0.7,
-  });
+if (process.env.GOOGLE_AI_API_KEY && ChatGoogleGenerativeAI) {
+  try {
+    googleBackup = new ChatGoogleGenerativeAI({
+      apiKey: process.env.GOOGLE_AI_API_KEY,
+      model: 'gemini-pro',
+      temperature: 0.7,
+    });
+  } catch (error) {
+    console.warn('Failed to initialize ChatGoogleGenerativeAI:', error.message);
+  }
 }
 
 // AI call with backup
 async function callAI(messages) {
   try {
-    await delay(500);
-    return await model.invoke(messages);
+    if (!model && !googleBackup) {
+      return { content: 'AI services are not configured. Please check your API keys.' };
+    }
+    
+    if (model) {
+      await delay(500);
+      return await model.invoke(messages);
+    } else if (googleBackup) {
+      return await googleBackup.invoke(messages);
+    }
+    
+    throw new Error('No AI models available');
   } catch (error) {
-    console.log('Anthropic failed, trying Google AI:', error.message);
-    if (googleBackup) {
+    console.log('Primary AI failed, trying backup:', error.message);
+    if (googleBackup && model) {  // Only try backup if we haven't already tried it
       try {
         return await googleBackup.invoke(messages);
       } catch (googleError) {
-        console.error('All AI models failed:', { anthropic: error.message, google: googleError.message });
+        console.error('All AI models failed:', { primary: error.message, google: googleError.message });
       }
     }
     
-    throw new Error('All AI services unavailable');
+    return { content: `AI services unavailable: ${error.message}` };
   }
 }
 
@@ -104,23 +136,62 @@ function simpleSupervisor(state) {
 }
 
 // Agent nodes
-const { TavilySearchResults } = require('@langchain/community/tools/tavily_search');
-const { enhancedLegalSearch } = require('../legalSearch');
-const { sendEmailTool, sendDisputeLetterTool } = require('../emailTools');
-const { uspsTrackingTool, genericTrackingTool } = require('../trackingTools');
+let TavilySearchResults, enhancedLegalSearch, sendEmailTool, sendDisputeLetterTool, uspsTrackingTool, genericTrackingTool;
 
-const searchTool = new TavilySearchResults({
-  maxResults: 5,
-  apiKey: process.env.TAVILY_API_KEY,
-});
+try {
+  TavilySearchResults = require('@langchain/community/tools/tavily_search').TavilySearchResults;
+} catch (error) {
+  console.warn('TavilySearchResults not available:', error.message);
+}
+
+try {
+  enhancedLegalSearch = require('../legalSearch').enhancedLegalSearch;
+} catch (error) {
+  console.warn('enhancedLegalSearch not available:', error.message);
+  enhancedLegalSearch = async (query) => `Legal search unavailable: ${query}`;
+}
+
+try {
+  const emailTools = require('../emailTools');
+  sendEmailTool = emailTools.sendEmailTool;
+  sendDisputeLetterTool = emailTools.sendDisputeLetterTool;
+} catch (error) {
+  console.warn('Email tools not available:', error.message);
+}
+
+try {
+  const trackingTools = require('../trackingTools');
+  uspsTrackingTool = trackingTools.uspsTrackingTool;
+  genericTrackingTool = trackingTools.genericTrackingTool;
+} catch (error) {
+  console.warn('Tracking tools not available:', error.message);
+}
+
+let searchTool = null;
+if (TavilySearchResults && process.env.TAVILY_API_KEY) {
+  try {
+    searchTool = new TavilySearchResults({
+      maxResults: 5,
+      apiKey: process.env.TAVILY_API_KEY,
+    });
+  } catch (error) {
+    console.warn('Failed to initialize search tool:', error.message);
+  }
+}
 
 async function searchAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
   try {
-    const results = await searchTool.invoke(message);
-    return {
-      messages: [new HumanMessage({ content: `Search results: ${results}`, name: 'SearchAgent' })],
-    };
+    if (searchTool) {
+      const results = await searchTool.invoke(message);
+      return {
+        messages: [new HumanMessage({ content: `Search results: ${results}`, name: 'SearchAgent' })],
+      };
+    } else {
+      return {
+        messages: [new HumanMessage({ content: `Search unavailable. Query: ${message}`, name: 'SearchAgent' })],
+      };
+    }
   } catch (error) {
     return {
       messages: [new HumanMessage({ content: `Search failed: ${error.message}`, name: 'SearchAgent' })],
@@ -130,38 +201,56 @@ async function searchAgent(state) {
 
 async function reportAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const analysis = await callAI([
-    new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
-    new HumanMessage(message)
-  ]);
-  return {
-    messages: [new HumanMessage({ content: analysis.content, name: 'ReportAgent' })],
-  };
+  try {
+    const analysis = await callAI([
+      new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
+      new HumanMessage(message)
+    ]);
+    return {
+      messages: [new HumanMessage({ content: analysis.content, name: 'ReportAgent' })],
+    };
+  } catch (error) {
+    return {
+      messages: [new HumanMessage({ content: `Credit report analysis unavailable: ${error.message}`, name: 'ReportAgent' })],
+    };
+  }
 }
 
 async function letterAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const { FDCPA_TEMPLATE, FCRA_TEMPLATE } = require('./templates');
-  
-  const letter = await callAI([
-    new SystemMessage(`Generate FDCPA/FCRA dispute letters. Use these templates: ${FDCPA_TEMPLATE.substring(0, 200)}...`),
-    new HumanMessage(message)
-  ]);
-  return {
-    messages: [new HumanMessage({ content: letter.content, name: 'LetterAgent' })],
-  };
+  try {
+    const { FDCPA_TEMPLATE, FCRA_TEMPLATE } = require('./templates');
+    
+    const letter = await callAI([
+      new SystemMessage(`Generate FDCPA/FCRA dispute letters. Use these templates: ${FDCPA_TEMPLATE.substring(0, 200)}...`),
+      new HumanMessage(message)
+    ]);
+    return {
+      messages: [new HumanMessage({ content: letter.content, name: 'LetterAgent' })],
+    };
+  } catch (error) {
+    return {
+      messages: [new HumanMessage({ content: `Letter generation unavailable: ${error.message}`, name: 'LetterAgent' })],
+    };
+  }
 }
 
 async function legalAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const legalInfo = await enhancedLegalSearch(message);
-  const response = await callAI([
-    new SystemMessage(`Legal context: ${legalInfo}`),
-    new HumanMessage(message)
-  ]);
-  return {
-    messages: [new HumanMessage({ content: response.content, name: 'LegalAgent' })],
-  };
+  try {
+    const legalInfo = await enhancedLegalSearch(message);
+    const response = await callAI([
+      new SystemMessage(`Legal context: ${legalInfo}`),
+      new HumanMessage(message)
+    ]);
+    return {
+      messages: [new HumanMessage({ content: response.content, name: 'LegalAgent' })],
+    };
+  } catch (error) {
+    return {
+      messages: [new HumanMessage({ content: `Legal search unavailable: ${error.message}`, name: 'LegalAgent' })],
+    };
+  }
 }
 
 async function emailAgent(state) {
@@ -169,15 +258,27 @@ async function emailAgent(state) {
   try {
     // Try to parse email request
     if (message.includes('send') && message.includes('email')) {
-      const result = await sendEmailTool.invoke(message);
-      return {
-        messages: [new HumanMessage({ content: result, name: 'EmailAgent' })],
-      };
+      if (sendEmailTool) {
+        const result = await sendEmailTool.invoke(message);
+        return {
+          messages: [new HumanMessage({ content: result, name: 'EmailAgent' })],
+        };
+      } else {
+        return {
+          messages: [new HumanMessage({ content: 'Email service not configured', name: 'EmailAgent' })],
+        };
+      }
     } else if (message.includes('dispute') && message.includes('letter')) {
-      const result = await sendDisputeLetterTool.invoke(message);
-      return {
-        messages: [new HumanMessage({ content: result, name: 'EmailAgent' })],
-      };
+      if (sendDisputeLetterTool) {
+        const result = await sendDisputeLetterTool.invoke(message);
+        return {
+          messages: [new HumanMessage({ content: result, name: 'EmailAgent' })],
+        };
+      } else {
+        return {
+          messages: [new HumanMessage({ content: 'Dispute letter service not configured', name: 'EmailAgent' })],
+        };
+      }
     }
     return {
       messages: [new HumanMessage({ content: 'Email tools ready. Specify: send email or send dispute letter', name: 'EmailAgent' })],
@@ -191,13 +292,19 @@ async function emailAgent(state) {
 
 async function calendarAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const reminder = await callAI([
-    new SystemMessage('Set legal deadline reminders and calendar events.'),
-    new HumanMessage(message)
-  ]);
-  return {
-    messages: [new HumanMessage({ content: reminder.content, name: 'CalendarAgent' })],
-  };
+  try {
+    const reminder = await callAI([
+      new SystemMessage('Set legal deadline reminders and calendar events.'),
+      new HumanMessage(message)
+    ]);
+    return {
+      messages: [new HumanMessage({ content: reminder.content, name: 'CalendarAgent' })],
+    };
+  } catch (error) {
+    return {
+      messages: [new HumanMessage({ content: `Calendar service unavailable: ${error.message}`, name: 'CalendarAgent' })],
+    };
+  }
 }
 
 async function trackingAgent(state) {
@@ -205,15 +312,19 @@ async function trackingAgent(state) {
   try {
     // Extract tracking number if present
     const trackingMatch = message.match(/\b[A-Z0-9]{10,}\b/);
-    if (trackingMatch) {
+    if (trackingMatch && uspsTrackingTool) {
       const result = await uspsTrackingTool.invoke(trackingMatch[0]);
       return {
         messages: [new HumanMessage({ content: result, name: 'TrackingAgent' })],
       };
-    } else {
+    } else if (genericTrackingTool) {
       const result = await genericTrackingTool.invoke(JSON.stringify({ trackingNumber: 'N/A', carrier: 'USPS' }));
       return {
         messages: [new HumanMessage({ content: result, name: 'TrackingAgent' })],
+      };
+    } else {
+      return {
+        messages: [new HumanMessage({ content: 'Tracking service not configured', name: 'TrackingAgent' })],
       };
     }
   } catch (error) {

@@ -5,29 +5,55 @@ const { ChatGoogle } = require('@langchain/google-gauth');
 const { ChatAnthropic } = require('@langchain/anthropic');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
 const Stripe = require('stripe');
-const { enhancedLegalSearch } = require('./legalSearch');
-const { graph } = require('./agents/supervisor');
 
-// Initialize Supabase client
-const supabase = createClient(
-  process.env.SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || '',
-  {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false
-    }
+// Import with error handling
+let enhancedLegalSearch, graph;
+try {
+  enhancedLegalSearch = require('./legalSearch').enhancedLegalSearch;
+} catch (error) {
+  console.warn('Legal search not available:', error.message);
+  enhancedLegalSearch = async (query) => `Legal search unavailable: ${query}`;
+}
+
+try {
+  graph = require('./agents/supervisor').graph;
+} catch (error) {
+  console.warn('Agent supervisor not available:', error.message);
+  graph = null;
+}
+
+// Initialize Supabase client (optional)
+let supabase = null;
+if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  try {
+    supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY,
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false
+        }
+      }
+    );
+  } catch (error) {
+    console.warn('Supabase client initialization failed:', error.message);
   }
-);
+} else {
+  console.warn('Supabase configuration not provided - some features will be unavailable');
+}
 
-// Initialize Anthropic as primary model
-const chatModel = new ChatAnthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-  model: 'claude-3-haiku-20240307',
-  temperature: 0.7,
-  maxRetries: 3,
-  timeout: 30000,
-});
+// Initialize Anthropic as primary model (with validation)
+let chatModel = null;
+if (process.env.ANTHROPIC_API_KEY) {
+  chatModel = new ChatAnthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    model: 'claude-3-haiku-20240307',
+    temperature: 0.7,
+    maxRetries: 3,
+    timeout: 30000,
+  });
+}
 
 // Initialize backup models
 let googleModel = null;
@@ -40,10 +66,19 @@ if (process.env.GOOGLE_AI_API_KEY) {
   });
 }
 
-// Initialize Stripe
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-  apiVersion: '2023-10-16'
-});
+// Initialize Stripe (optional)
+let stripe = null;
+if (process.env.STRIPE_SECRET_KEY) {
+  try {
+    stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+      apiVersion: '2023-10-16'
+    });
+  } catch (error) {
+    console.warn('Stripe initialization failed:', error.message);
+  }
+} else {
+  console.warn('Stripe configuration not provided - payment features will be unavailable');
+}
 
 // Memory storage for chat sessions
 const chatSessions = new Map();
@@ -66,30 +101,24 @@ async function processQueue() {
   const { fn, resolve, reject, useBackup } = requestQueue.shift();
   
   try {
+    // Check if primary model (Anthropic) is available
+    if (!chatModel) {
+      throw new Error('Primary AI model (Anthropic) not configured');
+    }
     const result = await fn();
     resolve(result);
   } catch (error) {
     console.log('Anthropic failed, trying backups:', error.message);
     if (!useBackup) {
-      // Try Google AI first
+      // Try Google AI as backup
       if (googleModel) {
         try {
           const googleResult = await fn('google');
           resolve(googleResult);
           return;
         } catch (googleError) {
-          console.log('Google AI failed, trying OpenAI:', googleError.message);
-        }
-      }
-      
-      // Try OpenAI as final backup
-      if (openaiModel) {
-        try {
-          const openaiResult = await fn('openai');
-          resolve(openaiResult);
-          return;
-        } catch (openaiError) {
-          console.error('All AI models failed:', { anthropic: error.message, google: googleError?.message, openai: openaiError.message });
+          console.log('Google AI failed:', googleError.message);
+          console.error('All AI models failed:', { anthropic: error.message, google: googleError.message });
         }
       }
       
@@ -167,34 +196,38 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       }
 
       try {
-        // Use supervisor graph
-        const result = await graph.invoke({
-          messages: [{ role: 'user', content: message }]
-        });
-        
-        const lastMessage = result.messages[result.messages.length - 1];
-        aiResponse = { content: lastMessage.content };
-        usedAgent = lastMessage.name || 'supervisor';
-        
-        // Emit agent steps
-        if (socketId && global.io) {
-          result.messages.forEach(msg => {
-            if (msg.name) {
-              global.io.to(socketId).emit('agent-step', {
-                tool: msg.name.replace('Agent', '').toLowerCase(),
-                toolInput: message,
-                log: `${msg.name} completed`,
-                timestamp: new Date().toISOString()
-              });
-            }
+        if (graph) {
+          // Use supervisor graph
+          const result = await graph.invoke({
+            messages: [{ role: 'user', content: message }]
           });
+          
+          const lastMessage = result.messages[result.messages.length - 1];
+          var aiResponse = { content: lastMessage.content };
+          usedAgent = lastMessage.name || 'supervisor';
+          
+          // Emit agent steps
+          if (socketId && global.io) {
+            result.messages.forEach(msg => {
+              if (msg.name) {
+                global.io.to(socketId).emit('agent-step', {
+                  tool: msg.name.replace('Agent', '').toLowerCase(),
+                  toolInput: message,
+                  log: `${msg.name} completed`,
+                  timestamp: new Date().toISOString()
+                });
+              }
+            });
+          }
+          
+          reasoningSteps.push('Supervisor routed through agents');
+        } else {
+          throw new Error('Agent supervisor not available');
         }
-        
-        reasoningSteps.push('Supervisor routed through agents');
       } catch (agentError) {
         console.log('Agent failed, falling back to direct AI:', agentError.message);
         reasoningSteps.push('Agent failed, using direct AI response');
-        aiResponse = await processWithRateLimit((useBackup) => {
+        var aiResponse = await processWithRateLimit((useBackup) => {
           let model = chatModel;
           if (useBackup === 'google' && googleModel) model = googleModel;
           return model.invoke(history);
@@ -203,7 +236,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     } else {
       // Regular chat - use Anthropic with Google AI backup
       reasoningSteps.push('Regular chat - using Anthropic with backup');
-      aiResponse = await processWithRateLimit((useBackup) => {
+      var aiResponse = await processWithRateLimit((useBackup) => {
         let model = chatModel;
         if (useBackup === 'google' && googleModel) model = googleModel;
         return model.invoke(history);
@@ -251,6 +284,11 @@ const STORAGE_PLANS = {
 // Asynchronous function to process a Stripe event after responding
 const processStripeEvent = async (event) => {
   try {
+    if (!supabase) {
+      console.warn('Supabase not configured, skipping stripe event processing');
+      return;
+    }
+    
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
       const userId = session.metadata?.userId;
@@ -304,6 +342,11 @@ const processStripeEvent = async (event) => {
 // Asynchronous function to process a storage-related Stripe event
 const processStorageEvent = async (event) => {
   try {
+    if (!supabase) {
+      console.warn('Supabase not configured, skipping storage event processing');
+      return;
+    }
+    
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
       const plan = session.metadata?.plan;
@@ -370,6 +413,11 @@ module.exports = async function handler(req, res) {
     // Stripe webhook endpoint
     if (path === 'stripe-webhook') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      
+      if (!stripe) {
+        return res.status(503).json({ error: 'Stripe not configured' });
+      }
+      
       const sig = req.headers['stripe-signature'];
       try {
         const event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET || '');
@@ -385,6 +433,11 @@ module.exports = async function handler(req, res) {
     // Storage webhook endpoint
     else if (path === 'storage/webhook') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      
+      if (!stripe) {
+        return res.status(503).json({ error: 'Stripe not configured' });
+      }
+      
       const sig = req.headers['stripe-signature'];
       try {
         const event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET || '');
@@ -435,6 +488,10 @@ module.exports = async function handler(req, res) {
       const sessionId = req.query.sessionId || req.headers['x-session-id'];
       if (!sessionId) return res.status(400).json({ error: 'Missing sessionId' });
 
+      if (!supabase) {
+        return res.status(200).json({ data: [] }); // Return empty history if no database
+      }
+
       const { data, error } = await supabase
         .from('chat_history')
         .select('*')
@@ -460,6 +517,14 @@ module.exports = async function handler(req, res) {
       if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
       const userId = req.query.userId;
       if (!userId) return res.status(400).json({ error: 'Missing userId' });
+
+      if (!supabase) {
+        return res.status(200).json({
+          dailyLimit: 5,
+          chatsUsed: 0,
+          remaining: 5
+        });
+      }
 
       const { data, error } = await supabase
         .from('user_metrics')
@@ -489,6 +554,10 @@ module.exports = async function handler(req, res) {
       if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
       const userId = req.query.userId;
       if (!userId) return res.status(400).json({ error: 'Missing userId' });
+
+      if (!supabase) {
+        return res.status(200).json({ credits: 5 });
+      }
 
       const { data, error } = await supabase
         .from('user_metrics')
