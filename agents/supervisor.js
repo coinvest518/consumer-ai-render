@@ -3,13 +3,8 @@ const { ChatPromptTemplate, MessagesPlaceholder } = require('@langchain/core/pro
 const { HumanMessage, SystemMessage } = require('@langchain/core/messages');
 const { z } = require('zod');
 
-// Import Google AI model
-let ChatGoogleGenerativeAI;
-try {
-  ChatGoogleGenerativeAI = require('@langchain/google-genai').ChatGoogleGenerativeAI;
-} catch (error) {
-  console.warn('ChatGoogleGenerativeAI not available:', error.message);
-}
+// Import dependencies
+const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
 
 // Define state
 const AgentState = Annotation.Root({

@@ -1,8 +1,6 @@
 const { createClient } = require('@supabase/supabase-js');
-const { ChatOpenAI } = require('@langchain/openai');
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
 const { ChatGoogle } = require('@langchain/google-gauth');
-const { ChatAnthropic } = require('@langchain/anthropic');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
 const Stripe = require('stripe');
 
