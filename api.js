@@ -43,28 +43,30 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   console.warn('Supabase configuration not provided - some features will be unavailable');
 }
 
-// Initialize Anthropic as primary model (with validation)
+// Initialize Google AI with Gemini 2.5 Flash model
 let chatModel = null;
-if (process.env.ANTHROPIC_API_KEY) {
-  chatModel = new ChatAnthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    model: 'claude-3-haiku-20240307',
+if (process.env.GOOGLE_AI_API_KEY) {
+  chatModel = new ChatGoogleGenerativeAI({
+    apiKey: process.env.GOOGLE_AI_API_KEY,
+    model: 'gemini-2.5-flash',
     temperature: 0.7,
     maxRetries: 3,
-    timeout: 30000,
+    maxOutputTokens: 2048, // Setting a reasonable output limit
+    topP: 0.95, // Default value per documentation
+    safetySettings: [
+      {
+        category: 'HARM_CATEGORY_HARASSMENT',
+        threshold: 'BLOCK_MEDIUM_AND_ABOVE'
+      },
+      {
+        category: 'HARM_CATEGORY_HATE_SPEECH',
+        threshold: 'BLOCK_MEDIUM_AND_ABOVE'
+      }
+    ]
   });
 }
 
-// Initialize backup models
-let googleModel = null;
-
-if (process.env.GOOGLE_AI_API_KEY) {
-  googleModel = new ChatGoogleGenerativeAI({
-    apiKey: process.env.GOOGLE_AI_API_KEY,
-    model: 'gemini-pro',
-    temperature: 0.7,
-  });
-}
+// No backup model - Using Gemini 2.5 Flash as primary
 
 // Initialize Stripe (optional)
 let stripe = null;
@@ -87,9 +89,9 @@ const chatSessions = new Map();
 const requestQueue = [];
 let isProcessing = false;
 
-async function processWithRateLimit(fn, useBackup = false) {
+async function processWithRateLimit(fn) {
   return new Promise((resolve, reject) => {
-    requestQueue.push({ fn, resolve, reject, useBackup });
+    requestQueue.push({ fn, resolve, reject });
     processQueue();
   });
 }
@@ -98,33 +100,24 @@ async function processQueue() {
   if (isProcessing || requestQueue.length === 0) return;
   
   isProcessing = true;
-  const { fn, resolve, reject, useBackup } = requestQueue.shift();
+  const { fn, resolve, reject } = requestQueue.shift();
   
   try {
-    // Check if primary model (Anthropic) is available
+    // Check if Google AI model is available
     if (!chatModel) {
-      throw new Error('Primary AI model (Anthropic) not configured');
+      throw new Error('Google AI model not configured - Please ensure you have:\n1. Valid GOOGLE_AI_API_KEY\n2. Enabled Vertex AI API\n3. Proper Google Cloud project setup with billing enabled');
     }
     const result = await fn();
     resolve(result);
   } catch (error) {
-    console.log('Anthropic failed, trying backups:', error.message);
-    if (!useBackup) {
-      // Try Google AI as backup
-      if (googleModel) {
-        try {
-          const googleResult = await fn('google');
-          resolve(googleResult);
-          return;
-        } catch (googleError) {
-          console.log('Google AI failed:', googleError.message);
-          console.error('All AI models failed:', { anthropic: error.message, google: googleError.message });
-        }
-      }
-      
-      reject(new Error('All AI services are currently unavailable'));
+    console.error('Google AI request failed:', error.message);
+    // Check for common Google Cloud errors
+    if (error.message.includes('quota') || error.message.includes('rate limit')) {
+      reject(new Error('Google AI quota exceeded. Please check your quota limits in Google Cloud Console.'));
+    } else if (error.message.includes('permission') || error.message.includes('unauthorized')) {
+      reject(new Error('Authorization failed. Please check your API key and permissions.'));
     } else {
-      reject(error);
+      reject(new Error('AI service error: ' + error.message));
     }
   } finally {
     isProcessing = false;

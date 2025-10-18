@@ -3,14 +3,8 @@ const { ChatPromptTemplate, MessagesPlaceholder } = require('@langchain/core/pro
 const { HumanMessage, SystemMessage } = require('@langchain/core/messages');
 const { z } = require('zod');
 
-// Import AI models with error handling
-let ChatAnthropic, ChatGoogleGenerativeAI;
-try {
-  ChatAnthropic = require('@langchain/anthropic').ChatAnthropic;
-} catch (error) {
-  console.warn('ChatAnthropic not available:', error.message);
-}
-
+// Import Google AI model
+let ChatGoogleGenerativeAI;
 try {
   ChatGoogleGenerativeAI = require('@langchain/google-genai').ChatGoogleGenerativeAI;
 } catch (error) {
@@ -29,62 +23,45 @@ const AgentState = Annotation.Root({
   }),
 });
 
-// Initialize models with Anthropic as primary (with validation)
+// Initialize Google AI with Gemini 2.5 Flash model
 let model = null;
-if (process.env.ANTHROPIC_API_KEY && ChatAnthropic) {
-  try {
-    model = new ChatAnthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-      model: 'claude-3-haiku-20240307',
-      temperature: 0.7,
-      maxRetries: 2,
-      timeout: 20000,
-    });
-  } catch (error) {
-    console.warn('Failed to initialize ChatAnthropic:', error.message);
-  }
-}
-
-let googleBackup = null;
-
 if (process.env.GOOGLE_AI_API_KEY && ChatGoogleGenerativeAI) {
   try {
-    googleBackup = new ChatGoogleGenerativeAI({
+    model = new ChatGoogleGenerativeAI({
       apiKey: process.env.GOOGLE_AI_API_KEY,
-      model: 'gemini-pro',
+      model: 'gemini-2.5-flash',
       temperature: 0.7,
+      maxRetries: 2,
+      maxOutputTokens: 2048,
+      topP: 0.95,
+      safetySettings: [
+        {
+          category: 'HARM_CATEGORY_HARASSMENT',
+          threshold: 'BLOCK_MEDIUM_AND_ABOVE'
+        },
+        {
+          category: 'HARM_CATEGORY_HATE_SPEECH',
+          threshold: 'BLOCK_MEDIUM_AND_ABOVE'
+        }
+      ]
     });
   } catch (error) {
     console.warn('Failed to initialize ChatGoogleGenerativeAI:', error.message);
   }
 }
 
-// AI call with backup
+// AI call with Google model
 async function callAI(messages) {
   try {
-    if (!model && !googleBackup) {
-      return { content: 'AI services are not configured. Please check your API keys.' };
+    if (!model) {
+      return { content: 'AI service is not configured. Please check your GOOGLE_AI_API_KEY.' };
     }
     
-    if (model) {
-      await delay(500);
-      return await model.invoke(messages);
-    } else if (googleBackup) {
-      return await googleBackup.invoke(messages);
-    }
-    
-    throw new Error('No AI models available');
+    await delay(500); // Rate limiting delay
+    return await model.invoke(messages);
   } catch (error) {
-    console.log('Primary AI failed, trying backup:', error.message);
-    if (googleBackup && model) {  // Only try backup if we haven't already tried it
-      try {
-        return await googleBackup.invoke(messages);
-      } catch (googleError) {
-        console.error('All AI models failed:', { primary: error.message, google: googleError.message });
-      }
-    }
-    
-    return { content: `AI services unavailable: ${error.message}` };
+    console.error('Google AI request failed:', error.message);
+    return { content: `AI service unavailable: ${error.message}` };
   }
 }
 
