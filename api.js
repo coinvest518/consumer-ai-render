@@ -80,8 +80,34 @@ if (process.env.STRIPE_SECRET_KEY) {
   console.warn('Stripe configuration not provided - payment features will be unavailable');
 }
 
-// Memory storage for chat sessions
+// Memory storage for chat sessions and response cache
 const chatSessions = new Map();
+const responseCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Simple response caching
+function getCachedResponse(message) {
+  const key = message.toLowerCase().trim();
+  const cached = responseCache.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.response;
+  }
+  return null;
+}
+
+function setCachedResponse(message, response) {
+  const key = message.toLowerCase().trim();
+  responseCache.set(key, {
+    response,
+    timestamp: Date.now()
+  });
+  
+  // Clean old cache entries
+  if (responseCache.size > 100) {
+    const entries = Array.from(responseCache.entries());
+    entries.slice(0, 50).forEach(([k]) => responseCache.delete(k));
+  }
+}
 
 // Rate limiting
 const requestQueue = [];
@@ -119,25 +145,25 @@ async function processQueue() {
     }
   } finally {
     isProcessing = false;
-    setTimeout(() => processQueue(), 1000);
+    // Faster queue processing
+    setTimeout(() => processQueue(), 200);
   }
 }
 
-// Detect if message needs agents
+// More selective agent detection - only for specific tasks
 function detectAgentNeed(message) {
-  const agentTriggers = [
-    'search', 'find', 'look up', 'research',
-    'dispute', 'letter', 'generate', 'create',
-    'track', 'mail', 'delivery', 'usps',
-    'email', 'send', 'notify',
-    'legal', 'law', 'rights', 'FDCPA', 'FCRA',
-    'report', 'credit', 'analyze', 'review',
-    'calendar', 'remind', 'deadline', 'schedule'
+  const msg = message.toLowerCase();
+  
+  // Only use agents for very specific tasks
+  const specificTriggers = [
+    'search for', 'find information about', 'look up',
+    'generate letter', 'create dispute letter',
+    'track package', 'usps tracking',
+    'send email', 'email notification',
+    'set reminder', 'calendar event'
   ];
   
-  return agentTriggers.some(trigger => 
-    message.toLowerCase().includes(trigger.toLowerCase())
-  );
+  return specificTriggers.some(trigger => msg.includes(trigger));
 }
 
 // Helper to get or create chat history
@@ -154,9 +180,55 @@ function getChatHistory(sessionId) {
   return chatSessions.get(sessionId);
 }
 
+// Fast response for common questions
+function getQuickResponse(message) {
+  const msg = message.toLowerCase();
+  
+  if (msg.includes('hello') || msg.includes('hi ') || msg.includes('hey')) {
+    return 'Hello! I\'m ConsumerAI, your legal assistant for consumer rights and credit disputes. How can I help you today?';
+  }
+  if (msg.includes('what can you do') || msg.includes('what do you do')) {
+    return 'I can help you with consumer rights, credit disputes, FDCPA/FCRA violations, dispute letters, and legal advice. I can also search for information, track packages, and set reminders.';
+  }
+  if (msg.includes('how are you') || msg.includes('how do you work')) {
+    return 'I\'m doing great! I\'m here to help you with consumer law questions and credit disputes. What would you like assistance with?';
+  }
+  return null;
+}
+
 // Smart message processing with agent detection
 async function processMessage(message, sessionId, socketId = null, useAgents = null) {
   try {
+    // Check for quick responses first
+    const quickResponse = getQuickResponse(message);
+    if (quickResponse) {
+      return {
+        message: quickResponse,
+        sessionId,
+        messageId: `${Date.now()}-ai`,
+        created_at: new Date().toISOString(),
+        decisionTrace: {
+          usedAgent: 'quick',
+          steps: ['Quick response']
+        }
+      };
+    }
+    
+    // Check cache for repeated questions
+    const cachedResponse = getCachedResponse(message);
+    if (cachedResponse) {
+      return {
+        message: cachedResponse,
+        sessionId,
+        messageId: `${Date.now()}-ai`,
+        created_at: new Date().toISOString(),
+        decisionTrace: {
+          usedAgent: 'cached',
+          steps: ['Cached response']
+        }
+      };
+    }
+    
     const history = getChatHistory(sessionId);
     const userMessage = new HumanMessage(message);
     history.push(userMessage);
@@ -164,10 +236,10 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     let reasoningSteps = [];
     let usedAgent = 'direct';
     
-    // Determine if agents are needed
-    const needsAgents = useAgents || detectAgentNeed(message);
+    // Determine if agents are needed - prefer direct AI
+    const needsAgents = useAgents === true || (useAgents !== false && detectAgentNeed(message));
     
-    if (needsAgents) {
+    if (needsAgents && graph) {
       reasoningSteps.push('Agent mode activated');
       usedAgent = 'supervisor';
       
@@ -187,55 +259,51 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       }
 
       try {
-        if (graph) {
-          // Use supervisor graph
-          const result = await graph.invoke({
+        // Use supervisor graph with timeout
+        const result = await Promise.race([
+          graph.invoke({
             messages: [{ role: 'user', content: message }]
+          }),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Agent timeout')), 10000)
+          )
+        ]);
+        
+        const lastMessage = result.messages[result.messages.length - 1];
+        var aiResponse = { content: lastMessage.content };
+        usedAgent = lastMessage.name || 'supervisor';
+        
+        // Emit agent steps
+        if (socketId && global.io) {
+          result.messages.forEach(msg => {
+            if (msg.name) {
+              global.io.to(socketId).emit('agent-step', {
+                tool: msg.name.replace('Agent', '').toLowerCase(),
+                toolInput: message,
+                log: `${msg.name} completed`,
+                timestamp: new Date().toISOString()
+              });
+            }
           });
-          
-          const lastMessage = result.messages[result.messages.length - 1];
-          var aiResponse = { content: lastMessage.content };
-          usedAgent = lastMessage.name || 'supervisor';
-          
-          // Emit agent steps
-          if (socketId && global.io) {
-            result.messages.forEach(msg => {
-              if (msg.name) {
-                global.io.to(socketId).emit('agent-step', {
-                  tool: msg.name.replace('Agent', '').toLowerCase(),
-                  toolInput: message,
-                  log: `${msg.name} completed`,
-                  timestamp: new Date().toISOString()
-                });
-              }
-            });
-          }
-          
-          reasoningSteps.push('Supervisor routed through agents');
-        } else {
-          throw new Error('Agent supervisor not available');
         }
+        
+        reasoningSteps.push('Agent completed successfully');
       } catch (agentError) {
         console.log('Agent failed, falling back to direct AI:', agentError.message);
         reasoningSteps.push('Agent failed, using direct AI response');
-        var aiResponse = await processWithRateLimit((useBackup) => {
-          let model = chatModel;
-          if (useBackup === 'google' && googleModel) model = googleModel;
-          return model.invoke(history);
-        });
+        var aiResponse = await processWithRateLimit(() => chatModel.invoke(history));
       }
     } else {
-      // Regular chat - use Anthropic with Google AI backup
-      reasoningSteps.push('Regular chat - using Anthropic with backup');
-      var aiResponse = await processWithRateLimit((useBackup) => {
-        let model = chatModel;
-        if (useBackup === 'google' && googleModel) model = googleModel;
-        return model.invoke(history);
-      });
+      // Regular chat - direct Google AI
+      reasoningSteps.push('Direct AI response');
+      var aiResponse = await processWithRateLimit(() => chatModel.invoke(history));
     }
     
     const aiMessage = new AIMessage(aiResponse.content);
     history.push(aiMessage);
+    
+    // Cache the response for future use
+    setCachedResponse(message, aiResponse.content);
 
     // Emit thinking complete
     if (socketId && global.io) {

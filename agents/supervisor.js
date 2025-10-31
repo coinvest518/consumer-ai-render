@@ -52,7 +52,7 @@ async function callAI(messages) {
       return { content: 'AI service is not configured. Please check your GOOGLE_AI_API_KEY.' };
     }
     
-    await delay(500); // Rate limiting delay
+    await delay(100); // Minimal delay for rate limiting
     return await model.invoke(messages);
   } catch (error) {
     console.error('Google AI request failed:', error.message);
@@ -92,10 +92,11 @@ const prompt = ChatPromptTemplate.fromMessages([
   ['human', 'Who should act next? Select one of: {options}'],
 ]);
 
-// Simplified supervisor without OpenAI calls
+// Fast supervisor with single-step routing
 function simpleSupervisor(state) {
   const message = state.messages[state.messages.length - 1].content.toLowerCase();
   
+  // Direct routing - no loops, single agent call
   if (message.includes('search') || message.includes('find')) return { next: 'search' };
   if (message.includes('report') || message.includes('credit')) return { next: 'report' };
   if (message.includes('letter') || message.includes('dispute')) return { next: 'letter' };
@@ -104,6 +105,7 @@ function simpleSupervisor(state) {
   if (message.includes('calendar') || message.includes('remind')) return { next: 'calendar' };
   if (message.includes('track') || message.includes('mail')) return { next: 'tracking' };
   
+  // Always end after one agent call
   return { next: END };
 }
 
@@ -317,9 +319,9 @@ const workflow = new StateGraph(AgentState)
   .addNode('calendar', calendarAgent)
   .addNode('tracking', trackingAgent);
 
-// Add edges
+// Direct edges to END - no loops back to supervisor
 members.forEach((member) => {
-  workflow.addEdge(member, 'supervisor');
+  workflow.addEdge(member, END);
 });
 
 workflow.addConditionalEdges(
@@ -330,7 +332,7 @@ workflow.addConditionalEdges(
 workflow.addEdge(START, 'supervisor');
 
 const graph = workflow.compile({
-  recursionLimit: 10 // Reduce from default 25 to prevent excessive API calls
+  recursionLimit: 3 // Minimal steps to prevent loops
 });
 
 module.exports = { graph, AgentState };
