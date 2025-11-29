@@ -1,15 +1,17 @@
-const { ChatOpenAI } = require('@langchain/openai');
+const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
+const { wrapGoogleGenerativeAI } = require('langsmith/wrappers');
 const { TavilySearchResults } = require('@langchain/community/tools/tavily_search');
 const axios = require('axios');
 const { DynamicTool } = require('@langchain/core/tools');
+const { HumanMessage, SystemMessage } = require('@langchain/core/messages');
 const nodemailer = require('nodemailer');
 
-// Initialize model
-const model = new ChatOpenAI({
-  openAIApiKey: process.env.OPENAI_API_KEY,
-  modelName: 'gpt-4',
+// Initialize model with Gemini
+const model = wrapGoogleGenerativeAI(new ChatGoogleGenerativeAI({
+  apiKey: process.env.GOOGLE_API_KEY,
+  model: 'gemini-1.5-flash',
   temperature: 0.7,
-});
+}));
 
 // Initialize tools
 const searchTool = new TavilySearchResults({
@@ -23,7 +25,7 @@ const emailTool = new DynamicTool({
   description: "Send email notifications",
   func: async (input) => {
     const { to, subject, body } = JSON.parse(input);
-    const transporter = nodemailer.createTransporter({
+    const transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
     });
@@ -67,8 +69,8 @@ async function searchAgent(state) {
 async function reportAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
   const analysis = await model.invoke([
-    { role: 'system', content: 'Analyze credit reports for FCRA violations and errors.' },
-    { role: 'user', content: message }
+    new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
+    new HumanMessage(message)
   ]);
   return {
     messages: [{ role: 'assistant', content: analysis.content }],
@@ -79,8 +81,8 @@ async function reportAgent(state) {
 async function letterAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
   const letter = await model.invoke([
-    { role: 'system', content: 'Generate FDCPA/FCRA dispute letters with proper legal formatting.' },
-    { role: 'user', content: message }
+    new SystemMessage('Generate FDCPA/FCRA dispute letters with proper legal formatting.'),
+    new HumanMessage(message)
   ]);
   return {
     messages: [{ role: 'assistant', content: letter.content }],
@@ -91,8 +93,8 @@ async function letterAgent(state) {
 async function calendarAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
   const reminder = await model.invoke([
-    { role: 'system', content: 'Set legal deadline reminders and calendar events.' },
-    { role: 'user', content: message }
+    new SystemMessage('Set legal deadline reminders and calendar events.'),
+    new HumanMessage(message)
   ]);
   return {
     messages: [{ role: 'assistant', content: reminder.content }],
@@ -105,8 +107,8 @@ async function legalAgent(state) {
   const { enhancedLegalSearch } = require('../legalSearch');
   const legalInfo = await enhancedLegalSearch(message);
   const response = await model.invoke([
-    { role: 'system', content: `Legal context: ${legalInfo}` },
-    { role: 'user', content: message }
+    new SystemMessage(`Legal context: ${legalInfo}`),
+    new HumanMessage(message)
   ]);
   return {
     messages: [{ role: 'assistant', content: response.content }],
@@ -133,8 +135,8 @@ async function emailAgent(state) {
 async function trackingAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
   const tracking = await model.invoke([
-    { role: 'system', content: 'Track certified mail and provide delivery updates.' },
-    { role: 'user', content: message }
+    new SystemMessage('Track certified mail and provide delivery updates.'),
+    new HumanMessage(message)
   ]);
   return {
     messages: [{ role: 'assistant', content: tracking.content }],

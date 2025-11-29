@@ -18,13 +18,13 @@ const AgentState = Annotation.Root({
   }),
 });
 
-// Initialize Google AI with Gemini 2.5 Flash model
+// Initialize Google AI with Gemini 1.5 Flash model
 let model = null;
-if (process.env.GOOGLE_AI_API_KEY && ChatGoogleGenerativeAI) {
+if (process.env.GOOGLE_API_KEY && ChatGoogleGenerativeAI) {
   try {
-    model = new ChatGoogleGenerativeAI({
-      apiKey: process.env.GOOGLE_AI_API_KEY,
-      model: 'gemini-2.5-flash',
+    model = wrapGoogleGenerativeAI(new ChatGoogleGenerativeAI({
+      apiKey: process.env.GOOGLE_API_KEY,
+      model: 'gemini-1.5-flash',
       temperature: 0.7,
       maxRetries: 2,
       maxOutputTokens: 2048,
@@ -39,7 +39,7 @@ if (process.env.GOOGLE_AI_API_KEY && ChatGoogleGenerativeAI) {
           threshold: 'BLOCK_MEDIUM_AND_ABOVE'
         }
       ]
-    });
+    }));
   } catch (error) {
     console.warn('Failed to initialize ChatGoogleGenerativeAI:', error.message);
   }
@@ -49,7 +49,7 @@ if (process.env.GOOGLE_AI_API_KEY && ChatGoogleGenerativeAI) {
 async function callAI(messages) {
   try {
     if (!model) {
-      return { content: 'AI service is not configured. Please check your GOOGLE_AI_API_KEY.' };
+      return { content: 'AI service is not configured. Please check your GOOGLE_API_KEY.' };
     }
     
     await delay(100); // Minimal delay for rate limiting

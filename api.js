@@ -1,5 +1,6 @@
 const { createClient } = require('@supabase/supabase-js');
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
+const { wrapGoogleGenerativeAI } = require('langsmith/wrappers');
 const { ChatGoogle } = require('@langchain/google-gauth');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
 const Stripe = require('stripe');
@@ -41,12 +42,12 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   console.warn('Supabase configuration not provided - some features will be unavailable');
 }
 
-// Initialize Google AI with Gemini 2.5 Flash model
+// Initialize Google AI with Gemini 1.5 Flash model
 let chatModel = null;
-if (process.env.GOOGLE_AI_API_KEY) {
-  chatModel = new ChatGoogleGenerativeAI({
-    apiKey: process.env.GOOGLE_AI_API_KEY,
-    model: 'gemini-2.5-flash',
+if (process.env.GOOGLE_API_KEY) {
+  chatModel = wrapGoogleGenerativeAI(new ChatGoogleGenerativeAI({
+    apiKey: process.env.GOOGLE_API_KEY,
+    model: 'gemini-1.5-flash',
     temperature: 0.7,
     maxRetries: 3,
     maxOutputTokens: 2048, // Setting a reasonable output limit
@@ -61,10 +62,10 @@ if (process.env.GOOGLE_AI_API_KEY) {
         threshold: 'BLOCK_MEDIUM_AND_ABOVE'
       }
     ]
-  });
+  }));
 }
 
-// No backup model - Using Gemini 2.5 Flash as primary
+// No backup model - Using Gemini 1.5 Flash as primary
 
 // Initialize Stripe (optional)
 let stripe = null;
@@ -129,7 +130,7 @@ async function processQueue() {
   try {
     // Check if Google AI model is available
     if (!chatModel) {
-      throw new Error('Google AI model not configured - Please ensure you have:\n1. Valid GOOGLE_AI_API_KEY\n2. Enabled Vertex AI API\n3. Proper Google Cloud project setup with billing enabled');
+      throw new Error('Google AI model not configured - Please ensure you have:\n1. Valid GOOGLE_API_KEY\n2. Enabled Vertex AI API\n3. Proper Google Cloud project setup with billing enabled');
     }
     const result = await fn();
     resolve(result);
@@ -516,7 +517,7 @@ module.exports = async function handler(req, res) {
         timestamp: new Date().toISOString(),
         env: {
           hasAnthropic: !!process.env.ANTHROPIC_API_KEY,
-          hasGoogleAI: !!process.env.GOOGLE_AI_API_KEY,
+          hasGoogleAI: !!process.env.GOOGLE_API_KEY,
           hasTavily: !!process.env.TAVILY_API_KEY
         }
       });
