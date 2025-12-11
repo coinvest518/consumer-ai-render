@@ -45,24 +45,42 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
 // Initialize Google AI with Gemini 1.5 Flash model
 let chatModel = null;
 if (process.env.GOOGLE_API_KEY) {
-  chatModel = wrapGoogleGenerativeAI(new ChatGoogleGenerativeAI({
-    apiKey: process.env.GOOGLE_API_KEY,
-    model: 'gemini-1.5-flash',
-    temperature: 0.7,
-    maxRetries: 3,
-    maxOutputTokens: 2048, // Setting a reasonable output limit
-    topP: 0.95, // Default value per documentation
-    safetySettings: [
-      {
-        category: 'HARM_CATEGORY_HARASSMENT',
-        threshold: 'BLOCK_MEDIUM_AND_ABOVE'
-      },
-      {
-        category: 'HARM_CATEGORY_HATE_SPEECH',
-        threshold: 'BLOCK_MEDIUM_AND_ABOVE'
-      }
-    ]
-  }));
+  try {
+    console.log('Initializing Google AI model with API key:', process.env.GOOGLE_API_KEY ? 'Present' : 'Missing');
+    // Try without LangSmith wrapping first to isolate the issue
+    const baseModel = new ChatGoogleGenerativeAI({
+      apiKey: process.env.GOOGLE_API_KEY,
+      model: 'gemini-1.5-flash',
+      temperature: 0.7,
+      maxRetries: 3,
+      maxOutputTokens: 2048, // Setting a reasonable output limit
+      topP: 0.95, // Default value per documentation
+      safetySettings: [
+        {
+          category: 'HARM_CATEGORY_HARASSMENT',
+          threshold: 'BLOCK_MEDIUM_AND_ABOVE'
+        },
+        {
+          category: 'HARM_CATEGORY_HATE_SPEECH',
+          threshold: 'BLOCK_MEDIUM_AND_ABOVE'
+        }
+      ]
+    });
+
+    // Only wrap with LangSmith if tracing is enabled
+    if (process.env.LANGSMITH_API_KEY && process.env.LANGSMITH_TRACING === 'true') {
+      chatModel = wrapGoogleGenerativeAI(baseModel);
+      console.log('Google AI model initialized with LangSmith tracing');
+    } else {
+      chatModel = baseModel;
+      console.log('Google AI model initialized without LangSmith tracing');
+    }
+  } catch (error) {
+    console.error('Failed to initialize Google AI model:', error.message);
+    chatModel = null;
+  }
+} else {
+  console.warn('GOOGLE_API_KEY not found in environment variables');
 }
 
 // No backup model - Using Gemini 1.5 Flash as primary
@@ -130,7 +148,7 @@ async function processQueue() {
   try {
     // Check if Google AI model is available
     if (!chatModel) {
-      throw new Error('Google AI model not configured - Please ensure you have:\n1. Valid GOOGLE_API_KEY\n2. Enabled Vertex AI API\n3. Proper Google Cloud project setup with billing enabled');
+      throw new Error('Google AI (Gemini) model not configured - Please ensure you have:\n1. Valid GOOGLE_API_KEY environment variable\n2. Google AI API enabled in your Google Cloud project\n3. Proper API key with Gemini API access');
     }
     const result = await fn();
     resolve(result);
