@@ -24,12 +24,20 @@ const emailTool = new DynamicTool({
   name: "send_email",
   description: "Send email notifications",
   func: async (input) => {
+    const emailUser = process.env.EMAIL_USER || process.env.SMTP_USER;
+    const emailPass = process.env.EMAIL_PASS || process.env.SMTP_PASS;
+    const emailFrom = process.env.EMAIL_FROM || process.env.SMTP_FROM;
+    
+    if (!emailUser || !emailPass) {
+      throw new Error('Email credentials not configured');
+    }
+    
     const { to, subject, body } = JSON.parse(input);
     const transporter = nodemailer.createTransport({
       service: 'gmail',
-      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+      auth: { user: emailUser, pass: emailPass }
     });
-    await transporter.sendMail({ from: process.env.EMAIL_USER, to, subject, html: body });
+    await transporter.sendMail({ from: emailFrom || emailUser, to, subject, html: body });
     return `Email sent to ${to}`;
   },
 });
