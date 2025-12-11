@@ -110,12 +110,12 @@ function simpleSupervisor(state) {
 }
 
 // Agent nodes
-let TavilySearchResults, enhancedLegalSearch, sendEmailTool, sendDisputeLetterTool, uspsTrackingTool, genericTrackingTool;
+let TavilySearch, enhancedLegalSearch, sendEmailTool, sendDisputeLetterTool, uspsTrackingTool, genericTrackingTool;
 
 try {
-  TavilySearchResults = require('@langchain/community/tools/tavily_search').TavilySearchResults;
+  TavilySearch = require('@langchain/tavily').TavilySearch;
 } catch (error) {
-  console.warn('TavilySearchResults not available:', error.message);
+  console.warn('TavilySearch not available:', error.message);
 }
 
 try {
@@ -142,9 +142,9 @@ try {
 }
 
 let searchTool = null;
-if (TavilySearchResults && process.env.TAVILY_API_KEY) {
+if (TavilySearch && process.env.TAVILY_API_KEY) {
   try {
-    searchTool = new TavilySearchResults({
+    searchTool = new TavilySearch({
       maxResults: 5,
       apiKey: process.env.TAVILY_API_KEY,
     });

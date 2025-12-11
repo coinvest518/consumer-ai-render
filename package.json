@@ -19,6 +19,7 @@
     "@langchain/google-genai": "^2.0.4",
     "@langchain/langgraph": "^0.2.19",
     "@langchain/openai": "^0.3.12",
+    "@langchain/tavily": "^1.0.1",
     "@supabase/supabase-js": "^2.50.5",
     "axios": "^1.11.0",
     "cors": "^2.8.5",

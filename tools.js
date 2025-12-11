@@ -1,8 +1,8 @@
-const { TavilySearchResults } = require('@langchain/community/tools/tavily_search');
+const { TavilySearch } = require('@langchain/tavily');
 const { DynamicTool } = require('@langchain/core/tools');
 
 // Initialize Tavily search tool
-const tavilyTool = new TavilySearchResults({
+const tavilyTool = new TavilySearch({
   maxResults: 5,
   apiKey: process.env.TAVILY_API_KEY,
 });

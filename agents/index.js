@@ -1,5 +1,5 @@
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
-const { TavilySearchResults } = require('@langchain/community/tools/tavily_search');
+const { TavilySearch } = require('@langchain/tavily');
 const axios = require('axios');
 const { DynamicTool } = require('@langchain/core/tools');
 const { HumanMessage, SystemMessage } = require('@langchain/core/messages');
@@ -13,7 +13,7 @@ const model = new ChatGoogleGenerativeAI({
 });
 
 // Initialize tools
-const searchTool = new TavilySearchResults({
+const searchTool = new TavilySearch({
   maxResults: 5,
   apiKey: process.env.TAVILY_API_KEY,
 });
