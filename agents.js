@@ -5,7 +5,7 @@ const { HumanMessage, SystemMessage } = require('@langchain/core/messages');
 // Initialize the model with Gemini
 const model = new ChatGoogleGenerativeAI({
   apiKey: process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY,
-  model: 'gemini-2.0-flash',
+  model: 'gemini-2.5-flash',
   temperature: 0.7,
 });
 

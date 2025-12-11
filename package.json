@@ -16,7 +16,7 @@
     "@langchain/community": "^0.3.15",
     "@langchain/core": "^0.3.15",
     "@langchain/google-gauth": "^0.2.16",
-    "@langchain/google-genai": "^0.1.2",
+    "@langchain/google-genai": "^2.0.4",
     "@langchain/langgraph": "^0.2.19",
     "@langchain/openai": "^0.3.12",
     "@supabase/supabase-js": "^2.50.5",
