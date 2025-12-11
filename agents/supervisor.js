@@ -22,7 +22,7 @@ const AgentState = Annotation.Root({
 let model = null;
 if ((process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY) && ChatGoogleGenerativeAI) {
   try {
-    model = wrapGoogleGenerativeAI(new ChatGoogleGenerativeAI({
+    model = new ChatGoogleGenerativeAI({
       apiKey: process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY,
       model: 'gemini-1.5-flash',
       temperature: 0.7,
@@ -39,7 +39,7 @@ if ((process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY) && ChatGoogleG
           threshold: 'BLOCK_MEDIUM_AND_ABOVE'
         }
       ]
-    }));
+    });
   } catch (error) {
     console.warn('Failed to initialize ChatGoogleGenerativeAI:', error.message);
   }

@@ -1,6 +1,5 @@
 const { createClient } = require('@supabase/supabase-js');
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
-const { wrapGoogleGenerativeAI } = require('langsmith/wrappers');
 const { HumanMessage, SystemMessage } = require('@langchain/core/messages');
 const fs = require('fs');
 const path = require('path');
@@ -15,11 +14,11 @@ const supabase = createClient(
 );
 
 // Initialize Google AI model
-const openaiModel = wrapGoogleGenerativeAI(new ChatGoogleGenerativeAI({
+const openaiModel = new ChatGoogleGenerativeAI({
   apiKey: process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY,
   model: 'gemini-1.5-flash',
   temperature: 0.1, // Low temperature for analysis
-}));
+});
 
 /**
  * Download file from Supabase storage

@@ -1,6 +1,5 @@
 const { createClient } = require('@supabase/supabase-js');
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
-const { wrapGoogleGenerativeAI } = require('langsmith/wrappers');
 const { ChatGoogle } = require('@langchain/google-gauth');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
 const Stripe = require('stripe');
@@ -68,14 +67,8 @@ if (googleApiKey) {
       ]
     });
 
-    // Only wrap with LangSmith if tracing is enabled
-    if (process.env.LANGSMITH_API_KEY && process.env.LANGSMITH_TRACING === 'true') {
-      chatModel = wrapGoogleGenerativeAI(baseModel);
-      console.log('Google AI model initialized with LangSmith tracing');
-    } else {
-      chatModel = baseModel;
-      console.log('Google AI model initialized without LangSmith tracing');
-    }
+    chatModel = baseModel;
+    console.log('Google AI model initialized successfully');
   } catch (error) {
     console.error('Failed to initialize Google AI model:', error.message);
     chatModel = null;
