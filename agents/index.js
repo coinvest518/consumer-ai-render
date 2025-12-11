@@ -68,14 +68,35 @@ async function searchAgent(state) {
 
 async function reportAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const analysis = await model.invoke([
-    new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
-    new HumanMessage(message)
-  ]);
-  return {
-    messages: [{ role: 'assistant', content: analysis.content }],
-    toolResults: [{ tool: 'report', result: 'Credit report analyzed' }]
-  };
+  
+  // Check if message contains a file path
+  const filePathMatch = message.match(/file_path:\s*(.+)/i);
+  if (filePathMatch) {
+    const filePath = filePathMatch[1].trim();
+    try {
+      const { processCreditReport } = require('../reportProcessor');
+      const result = await processCreditReport(filePath);
+      return {
+        messages: [{ role: 'assistant', content: JSON.stringify(result.analysis, null, 2) }],
+        toolResults: [{ tool: 'report', result: 'Credit report processed and analyzed' }]
+      };
+    } catch (error) {
+      return {
+        messages: [{ role: 'assistant', content: `Error processing credit report: ${error.message}` }],
+        toolResults: [{ tool: 'report', result: 'Processing failed' }]
+      };
+    }
+  } else {
+    // Fallback to text analysis
+    const analysis = await model.invoke([
+      new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
+      new HumanMessage(message)
+    ]);
+    return {
+      messages: [{ role: 'assistant', content: analysis.content }],
+      toolResults: [{ tool: 'report', result: 'Credit report analyzed' }]
+    };
+  }
 }
 
 async function letterAgent(state) {

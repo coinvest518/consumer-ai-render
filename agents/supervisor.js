@@ -175,18 +175,37 @@ async function searchAgent(state) {
 
 async function reportAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  try {
-    const analysis = await callAI([
-      new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
-      new HumanMessage(message)
-    ]);
-    return {
-      messages: [new HumanMessage({ content: analysis.content, name: 'ReportAgent' })],
-    };
-  } catch (error) {
-    return {
-      messages: [new HumanMessage({ content: `Credit report analysis unavailable: ${error.message}`, name: 'ReportAgent' })],
-    };
+  
+  // Check if message contains a file path
+  const filePathMatch = message.match(/file_path:\s*(.+)/i);
+  if (filePathMatch) {
+    const filePath = filePathMatch[1].trim();
+    try {
+      const { processCreditReport } = require('../reportProcessor');
+      const result = await processCreditReport(filePath);
+      return {
+        messages: [new HumanMessage({ content: JSON.stringify(result.analysis, null, 2), name: 'ReportAgent' })],
+      };
+    } catch (error) {
+      return {
+        messages: [new HumanMessage({ content: `Error processing credit report: ${error.message}`, name: 'ReportAgent' })],
+      };
+    }
+  } else {
+    // Fallback to text analysis
+    try {
+      const analysis = await callAI([
+        new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
+        new HumanMessage(message)
+      ]);
+      return {
+        messages: [new HumanMessage({ content: analysis.content, name: 'ReportAgent' })],
+      };
+    } catch (error) {
+      return {
+        messages: [new HumanMessage({ content: `Credit report analysis unavailable: ${error.message}`, name: 'ReportAgent' })],
+      };
+    }
   }
 }
 

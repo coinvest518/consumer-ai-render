@@ -1,4 +1,5 @@
 const { DataAPIClient } = require('@datastax/astra-db-ts');
+const { GoogleGenerativeAIEmbeddings } = require('@langchain/google-genai');
 
 // Initialize AstraDB client
 let astraClient = null;
@@ -6,24 +7,22 @@ if (process.env.ASTRA_DB_APPLICATION_TOKEN && process.env.ASTRA_DB_API_ENDPOINT)
   astraClient = new DataAPIClient(process.env.ASTRA_DB_APPLICATION_TOKEN);
 }
 
-// Generate embedding using OpenAI
+// Initialize Google AI embeddings
+let embeddings = null;
+if (process.env.GOOGLE_API_KEY) {
+  embeddings = new GoogleGenerativeAIEmbeddings({
+    apiKey: process.env.GOOGLE_API_KEY,
+    modelName: 'embedding-001', // Google's text embedding model
+  });
+}
+
+// Generate embedding using Google AI
 async function generateEmbedding(text) {
-  if (!process.env.OPENAI_API_KEY) return null;
-  
+  if (!embeddings) return null;
+
   try {
-    const response = await fetch('https://api.openai.com/v1/embeddings', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        input: text,
-        model: 'text-embedding-ada-002'
-      })
-    });
-    const data = await response.json();
-    return data.data[0].embedding;
+    const embedding = await embeddings.embedQuery(text);
+    return embedding;
   } catch (error) {
     console.error('Embedding generation failed:', error);
     return null;

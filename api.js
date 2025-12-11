@@ -635,6 +635,36 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    // Report analysis endpoint
+    if (path === 'report/analyze') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      
+      const { filePath, userId } = req.body;
+      if (!filePath) {
+        return res.status(400).json({ error: 'Missing filePath' });
+      }
+
+      try {
+        const { processCreditReport } = require('./reportProcessor');
+        const result = await processCreditReport(filePath);
+        
+        // Store analysis result in database if needed
+        if (supabase && userId) {
+          await supabase.from('report_analyses').insert({
+            user_id: userId,
+            file_path: filePath,
+            analysis: result.analysis,
+            processed_at: result.processedAt
+          });
+        }
+
+        return res.status(200).json(result);
+      } catch (error) {
+        console.error('Report analysis error:', error);
+        return res.status(500).json({ error: error.message });
+      }
+    }
+
     // Fallback for unhandled paths
     else {
       return res.status(404).json({

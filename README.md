@@ -12,11 +12,18 @@ npm install
 2. Create a `.env` file with the following variables:
 ```
 PORT=3001
-OPENAI_API_KEY=your_openai_api_key
+GOOGLE_API_KEY=your_google_api_key_here  # Primary Google AI key for Gemini
+TAVILY_API_KEY=your_tavily_api_key
 SUPABASE_URL=your_supabase_url
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 STRIPE_SECRET_KEY=your_stripe_secret_key
 STRIPE_WEBHOOK_SECRET=your_stripe_webhook_secret
+EMAIL_USER=your_email@gmail.com
+EMAIL_PASS=your_email_app_password
+# Optional: LangSmith for evaluation
+LANGSMITH_API_KEY=your_langsmith_api_key_here
+LANGSMITH_TRACING=true
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 ```
 
 3. Start the server:
@@ -34,6 +41,7 @@ npm start
 - `POST /api/stripe-webhook` - Handle Stripe webhook events
 - `POST /api/storage/upgrade` - Handle storage plan upgrades
 - `POST /api/storage/webhook` - Handle storage-related webhook events
+- `POST /api/report/analyze` - Analyze credit report files for violations and errors
 - `POST /api/agents` - Process agent messages
 
 ## Deployment
