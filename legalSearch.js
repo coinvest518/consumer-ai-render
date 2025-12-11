@@ -9,9 +9,9 @@ if (process.env.ASTRA_DB_APPLICATION_TOKEN && process.env.ASTRA_DB_API_ENDPOINT)
 
 // Initialize Google AI embeddings
 let embeddings = null;
-if (process.env.GOOGLE_API_KEY) {
+if (process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY) {
   embeddings = new GoogleGenerativeAIEmbeddings({
-    apiKey: process.env.GOOGLE_API_KEY,
+    apiKey: process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY,
     modelName: 'embedding-001', // Google's text embedding model
   });
 }

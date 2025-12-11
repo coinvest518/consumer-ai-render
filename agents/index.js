@@ -8,7 +8,7 @@ const nodemailer = require('nodemailer');
 
 // Initialize model with Gemini
 const model = wrapGoogleGenerativeAI(new ChatGoogleGenerativeAI({
-  apiKey: process.env.GOOGLE_API_KEY,
+  apiKey: process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY,
   model: 'gemini-1.5-flash',
   temperature: 0.7,
 }));

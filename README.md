@@ -13,6 +13,7 @@ npm install
 ```
 PORT=3001
 GOOGLE_API_KEY=your_google_api_key_here  # Primary Google AI key for Gemini
+# GOOGLE_AI_API_KEY=your_google_api_key_here  # Alternative name (also supported)
 TAVILY_API_KEY=your_tavily_api_key
 SUPABASE_URL=your_supabase_url
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key

@@ -44,12 +44,13 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
 
 // Initialize Google AI with Gemini 1.5 Flash model
 let chatModel = null;
-if (process.env.GOOGLE_API_KEY) {
+const googleApiKey = process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY;
+if (googleApiKey) {
   try {
-    console.log('Initializing Google AI model with API key:', process.env.GOOGLE_API_KEY ? 'Present' : 'Missing');
+    console.log('Initializing Google AI model with API key:', googleApiKey ? 'Present' : 'Missing');
     // Try without LangSmith wrapping first to isolate the issue
     const baseModel = new ChatGoogleGenerativeAI({
-      apiKey: process.env.GOOGLE_API_KEY,
+      apiKey: googleApiKey,
       model: 'gemini-1.5-flash',
       temperature: 0.7,
       maxRetries: 3,
@@ -80,7 +81,7 @@ if (process.env.GOOGLE_API_KEY) {
     chatModel = null;
   }
 } else {
-  console.warn('GOOGLE_API_KEY not found in environment variables');
+  console.warn('GOOGLE_API_KEY or GOOGLE_AI_API_KEY not found in environment variables');
 }
 
 // No backup model - Using Gemini 1.5 Flash as primary
@@ -148,7 +149,7 @@ async function processQueue() {
   try {
     // Check if Google AI model is available
     if (!chatModel) {
-      throw new Error('Google AI (Gemini) model not configured - Please ensure you have:\n1. Valid GOOGLE_API_KEY environment variable\n2. Google AI API enabled in your Google Cloud project\n3. Proper API key with Gemini API access');
+      throw new Error('Google AI (Gemini) model not configured - Please ensure you have:\n1. Valid GOOGLE_API_KEY or GOOGLE_AI_API_KEY environment variable\n2. Google AI API enabled in your Google Cloud project\n3. Proper API key with Gemini API access');
     }
     const result = await fn();
     resolve(result);
@@ -535,7 +536,7 @@ module.exports = async function handler(req, res) {
         timestamp: new Date().toISOString(),
         env: {
           hasAnthropic: !!process.env.ANTHROPIC_API_KEY,
-          hasGoogleAI: !!process.env.GOOGLE_API_KEY,
+          hasGoogleAI: !!(process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY),
           hasTavily: !!process.env.TAVILY_API_KEY
         }
       });
