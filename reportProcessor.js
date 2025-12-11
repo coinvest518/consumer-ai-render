@@ -16,7 +16,7 @@ const supabase = createClient(
 // Initialize Google AI model
 const openaiModel = new ChatGoogleGenerativeAI({
   apiKey: process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY,
-  model: 'gemini-1.5-flash',
+  model: 'gemini-2.0-flash',
   temperature: 0.1, // Low temperature for analysis
 });
 

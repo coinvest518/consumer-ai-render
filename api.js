@@ -41,7 +41,7 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   console.warn('Supabase configuration not provided - some features will be unavailable');
 }
 
-// Initialize Google AI with Gemini 1.5 Flash model
+// Initialize Google AI with Gemini 2.0 Flash model
 let chatModel = null;
 const googleApiKey = process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY;
 if (googleApiKey) {
@@ -50,7 +50,7 @@ if (googleApiKey) {
     // Try without LangSmith wrapping first to isolate the issue
     const baseModel = new ChatGoogleGenerativeAI({
       apiKey: googleApiKey,
-      model: 'gemini-1.5-flash',
+      model: 'gemini-2.0-flash',
       temperature: 0.7,
       maxRetries: 3,
       maxOutputTokens: 2048, // Setting a reasonable output limit
@@ -77,7 +77,7 @@ if (googleApiKey) {
   console.warn('GOOGLE_API_KEY or GOOGLE_AI_API_KEY not found in environment variables');
 }
 
-// No backup model - Using Gemini 1.5 Flash as primary
+// No backup model - Using Gemini 2.0 Flash as primary
 
 // Initialize Stripe (optional)
 let stripe = null;

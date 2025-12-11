@@ -18,13 +18,13 @@ const AgentState = Annotation.Root({
   }),
 });
 
-// Initialize Google AI with Gemini 1.5 Flash model
+// Initialize Google AI with Gemini 2.0 Flash model
 let model = null;
 if ((process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY) && ChatGoogleGenerativeAI) {
   try {
     model = new ChatGoogleGenerativeAI({
       apiKey: process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY,
-      model: 'gemini-1.5-flash',
+      model: 'gemini-2.0-flash',
       temperature: 0.7,
       maxRetries: 2,
       maxOutputTokens: 2048,
