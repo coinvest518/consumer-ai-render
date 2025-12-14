@@ -415,37 +415,273 @@ Format your response with clear sections and highlighting.`),
 
 async function letterAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
+  const USPSIntegration = require('../utils/uspsIntegration');
+  
   try {
     const { FDCPA_TEMPLATE, FCRA_TEMPLATE } = require('./templates');
+    const msg = message.toLowerCase();
     
-    const letter = await callAI([
-      new SystemMessage(`Generate FDCPA/FCRA dispute letters. Use these templates: ${FDCPA_TEMPLATE.substring(0, 200)}...`),
-      new HumanMessage(message)
-    ]);
+    let response = "";
+    
+    // Determine letter type and provide specific guidance
+    if (msg.includes('validation') || msg.includes('fdcpa') || msg.includes('debt')) {
+      response = `📝 **FDCPA Debt Validation Letter**\n\n`;
+      response += `Here's your validation request letter:\n\n`;
+      response += `---\n\n`;
+      
+      // Generate personalized letter
+      const letter = await callAI([
+        new SystemMessage(`Generate a professional FDCPA debt validation letter. Use this template as a base but personalize it based on the user's situation: ${FDCPA_TEMPLATE}. 
+        
+        Make it firm but professional. Include all required validation elements. Format it properly for mailing.`),
+        new HumanMessage(message)
+      ]);
+      
+      response += letter.content;
+      response += `\n\n---\n\n`;
+      
+      // Add mailing instructions
+      const mailingAdvice = USPSIntegration.getMailingRecommendations('FDCPA_validation');
+      response += `📮 **How to Send This Letter**:\n`;
+      response += `• **Method**: ${mailingAdvice.mailType.toUpperCase()} with return receipt\n`;
+      response += `• **Why**: ${mailingAdvice.advice}\n`;
+      response += `• **Copies**: Make 3 copies - one for your records, one to send, one backup\n`;
+      response += `• **Timeline**: Send within 30 days of first contact\n\n`;
+      response += `⏰ **What Happens Next**:\n`;
+      response += `• Debt collector must STOP collection until they validate\n`;
+      response += `• They have 30 days to provide proper documentation\n`;
+      response += `• If they can't validate, they must remove it from your credit\n`;
+      response += `• Keep your certified mail receipt as proof!`;
+    }
+    
+    else if (msg.includes('credit') || msg.includes('fcra') || msg.includes('bureau')) {
+      response = `📊 **FCRA Credit Report Dispute Letter**\n\n`;
+      response += `Here's your credit dispute letter:\n\n`;
+      response += `---\n\n`;
+      
+      const letter = await callAI([
+        new SystemMessage(`Generate a professional FCRA credit dispute letter. Use this template as a base: ${FCRA_TEMPLATE}. 
+        
+        Personalize it based on the specific credit report errors mentioned. Be specific about what's wrong and why. Include request for investigation and removal.`),
+        new HumanMessage(message)
+      ]);
+      
+      response += letter.content;
+      response += `\n\n---\n\n`;
+      
+      const mailingAdvice = USPSIntegration.getMailingRecommendations('FCRA_dispute');
+      response += `📮 **Sending Your Dispute**:\n`;
+      response += `• **Best Method**: ${mailingAdvice.mailType.toUpperCase()} mail\n`;
+      response += `• **Alternative**: Online dispute (but keep records!)\n`;
+      response += `• **Include**: Copies of supporting documents (NEVER originals)\n`;
+      response += `• **Send To**: All three credit bureaus if the error appears on multiple reports\n\n`;
+      response += `📅 **Timeline**:\n`;
+      response += `• Credit bureaus have 30 days to investigate\n`;
+      response += `• They must provide results within 5 days of completion\n`;
+      response += `• If they can't verify, they must delete the item`;
+    }
+    
+    else if (msg.includes('cease') || msg.includes('stop') || msg.includes('harassment')) {
+      response = `🛑 **Cease & Desist Letter**\n\n`;
+      response += `Here's your cease and desist letter:\n\n`;
+      response += `---\n\n`;
+      
+      const letter = await callAI([
+        new SystemMessage(`Generate a firm but professional cease and desist letter under the FDCPA. The letter should:
+        1. Reference FDCPA Section 805(c)
+        2. Clearly state they must stop all communication
+        3. Specify exceptions (legal notices only)
+        4. Be dated and include account information if provided
+        5. Be professional but firm in tone`),
+        new HumanMessage(message)
+      ]);
+      
+      response += letter.content;
+      response += `\n\n---\n\n`;
+      
+      const mailingAdvice = USPSIntegration.getMailingRecommendations('cease_desist');
+      response += `⚠️ **CRITICAL - How to Send**:\n`;
+      response += `• **MUST use**: ${mailingAdvice.mailType.toUpperCase()} mail with return receipt\n`;
+      response += `• **Why**: ${mailingAdvice.advice}\n`;
+      response += `• **Keep**: The certified mail receipt as legal proof\n\n`;
+      response += `🚨 **Important Warnings**:\n`;
+      response += `• This doesn't make the debt disappear\n`;
+      response += `• They can still sue you\n`;
+      response += `• Any contact after this letter is an FDCPA violation\n`;
+      response += `• Document any violations for potential lawsuit`;
+    }
+    
+    else {
+      // General letter assistance
+      response = `📝 **Letter Writing Assistant**\n\n`;
+      response += `I can help you create powerful dispute letters! What type do you need?\n\n`;
+      response += `🛡️ **FDCPA Validation Letter**:\n`;
+      response += `• Use when debt collectors first contact you\n`;
+      response += `• Forces them to prove you owe the debt\n`;
+      response += `• Stops collection during validation period\n\n`;
+      response += `📊 **FCRA Credit Dispute Letter**:\n`;
+      response += `• Use for errors on your credit report\n`;
+      response += `• Forces credit bureaus to investigate\n`;
+      response += `• Can remove negative items if unverifiable\n\n`;
+      response += `🛑 **Cease & Desist Letter**:\n`;
+      response += `• Use to stop harassment from collectors\n`;
+      response += `• Legally stops most communication\n`;
+      response += `• Must be sent certified mail to be effective\n\n`;
+      response += `💡 **Just tell me**: \n`;
+      response += `• What type of letter you need\n`;
+      response += `• Your specific situation\n`;
+      response += `• Any account details or errors to address\n\n`;
+      response += `I'll create a personalized, legally sound letter for you!`;
+    }
+    
     return {
-      messages: [new HumanMessage({ content: letter.content, name: 'LetterAgent' })],
+      messages: [new HumanMessage({ content: response, name: 'LetterAgent' })],
     };
   } catch (error) {
     return {
-      messages: [new HumanMessage({ content: `Letter generation unavailable: ${error.message}`, name: 'LetterAgent' })],
+      messages: [new HumanMessage({ 
+        content: `I'm having trouble generating letters right now, but here are the key templates you need:\n\n📝 **Quick Templates**:\n• FDCPA Validation: "I dispute this debt and request validation per 15 USC 1692g"\n• FCRA Dispute: "I dispute the following items on my credit report..."\n• Cease & Desist: "Per FDCPA 805(c), stop all communication except legal notices"\n\n📮 **Always send via CERTIFIED MAIL** for legal protection! What specific letter do you need help with?`, 
+        name: 'LetterAgent' 
+      })],
     };
   }
 }
 
 async function legalAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
+  const ConsumerLawDeadlines = require('../utils/consumerLawDeadlines');
+  
   try {
-    const legalInfo = await enhancedLegalSearch(message);
-    const response = await callAI([
-      new SystemMessage(`Legal context: ${legalInfo}`),
-      new HumanMessage(message)
-    ]);
+    const msg = message.toLowerCase();
+    let response = "";
+    
+    // Handle specific consumer law scenarios
+    if (msg.includes('statute of limitations') || msg.includes('sol') || msg.includes('too old')) {
+      response = `⚖️ **Statute of Limitations (SOL) - Your Shield Against Old Debts**\n\n`;
+      response += `The SOL is like an expiration date on debts. Here's what you need to know:\n\n`;
+      response += `📅 **Common SOL Periods**:\n`;
+      response += `• Credit cards: 3-6 years (varies by state)\n`;
+      response += `• Medical debt: 3-6 years\n`;
+      response += `• Auto loans: 4-6 years\n`;
+      response += `• Student loans: No SOL (federal)\n\n`;
+      response += `🚨 **CRITICAL**: Don't make payments on old debts! This can restart the SOL clock.\n\n`;
+      response += `💡 **If contacted about old debt**: Ask for validation and check the SOL. If expired, you have a strong defense.`;
+      
+      // If they mention a specific date, calculate SOL
+      const dateMatch = message.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})|(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})/);
+      if (dateMatch) {
+        const solInfo = ConsumerLawDeadlines.calculateSOL(dateMatch[0]);
+        response += `\n\n📊 **Your SOL Calculation**:\n`;
+        response += `• Original debt date: ${solInfo.originalDebtDate}\n`;
+        response += `• SOL expires: ${solInfo.solExpirationDate}\n`;
+        response += `• ${solInfo.advice}`;
+      }
+    }
+    
+    else if (msg.includes('fdcpa') || msg.includes('debt collector') || msg.includes('harassment')) {
+      response = `🛡️ **FDCPA - Your Rights Against Debt Collectors**\n\n`;
+      response += `The Fair Debt Collection Practices Act protects you from abusive collectors:\n\n`;
+      response += `🚫 **They CANNOT**:\n`;
+      response += `• Call before 8 AM or after 9 PM\n`;
+      response += `• Call you at work if you tell them not to\n`;
+      response += `• Use profanity or threats\n`;
+      response += `• Contact family/friends about your debt\n`;
+      response += `• Continue calling after you request validation\n\n`;
+      response += `✅ **You CAN**:\n`;
+      response += `• Request debt validation (within 30 days)\n`;
+      response += `• Tell them to stop calling (cease & desist)\n`;
+      response += `• Sue for violations ($1,000 + attorney fees)\n\n`;
+      response += `📝 **Action Steps**:\n`;
+      response += `1. Send validation request via certified mail\n`;
+      response += `2. Document all violations (dates, times, what was said)\n`;
+      response += `3. Keep records of all communications`;
+    }
+    
+    else if (msg.includes('fcra') || msg.includes('credit report') || msg.includes('credit bureau')) {
+      response = `📊 **FCRA - Your Credit Report Rights**\n\n`;
+      response += `The Fair Credit Reporting Act gives you powerful rights:\n\n`;
+      response += `🔍 **Free Credit Reports**:\n`;
+      response += `• One free report per year from each bureau\n`;
+      response += `• Additional free reports after disputes\n`;
+      response += `• Get them at annualcreditreport.com (official site)\n\n`;
+      response += `⚡ **Dispute Process**:\n`;
+      response += `• Credit bureaus have 30 days to investigate\n`;
+      response += `• Must provide results within 5 days of completion\n`;
+      response += `• If they can't verify, they must delete it\n\n`;
+      response += `💰 **Violations Can Pay**:\n`;
+      response += `• Actual damages + attorney fees\n`;
+      response += `• Statutory damages up to $1,000\n`;
+      response += `• Punitive damages for willful violations\n\n`;
+      response += `🎯 **Pro Tips**:\n`;
+      response += `• Dispute online AND by certified mail\n`;
+      response += `• Include supporting documentation\n`;
+      response += `• Follow up if no response in 30 days`;
+    }
+    
+    else if (msg.includes('validation') || msg.includes('prove') || msg.includes('verify')) {
+      response = `📋 **Debt Validation - Make Them Prove It**\n\n`;
+      response += `Debt validation is your first line of defense:\n\n`;
+      response += `📝 **What to Request**:\n`;
+      response += `• Original signed contract/agreement\n`;
+      response += `• Complete payment history\n`;
+      response += `• Proof they own the debt\n`;
+      response += `• License to collect in your state\n`;
+      response += `• Calculation of current balance\n\n`;
+      response += `⏰ **Timeline**:\n`;
+      response += `• You have 30 days from first contact\n`;
+      response += `• They must stop collection during validation\n`;
+      response += `• Send your request via certified mail\n\n`;
+      response += `🎯 **What Usually Happens**:\n`;
+      response += `• Many collectors can't provide proper validation\n`;
+      response += `• They often just send a computer printout (not enough!)\n`;
+      response += `• If they can't validate, they must stop collection`;
+    }
+    
+    else if (msg.includes('cease') || msg.includes('stop calling') || msg.includes('harassment')) {
+      response = `🛑 **Cease & Desist - Stop the Calls**\n\n`;
+      response += `You have the right to tell debt collectors to stop contacting you:\n\n`;
+      response += `📧 **How to Do It**:\n`;
+      response += `• Send a written cease & desist letter\n`;
+      response += `• Use certified mail with return receipt\n`;
+      response += `• Keep copies of everything\n\n`;
+      response += `⚖️ **Legal Effect**:\n`;
+      response += `• They can only contact you to confirm they'll stop\n`;
+      response += `• Or to notify you of specific legal action\n`;
+      response += `• Any other contact is an FDCPA violation\n\n`;
+      response += `💡 **Important Note**:\n`;
+      response += `• This doesn't make the debt go away\n`;
+      response += `• They can still sue you\n`;
+      response += `• But they must stop the phone harassment\n\n`;
+      response += `🎯 **Strategy**: Use this when collectors are abusive or you need time to plan your response.`;
+    }
+    
+    else {
+      // Fallback to enhanced legal search with conversational response
+      const legalInfo = await enhancedLegalSearch(message);
+      const aiResponse = await callAI([
+        new SystemMessage(`You are a friendly consumer law expert. Use this legal context: ${legalInfo}. 
+        
+        Provide practical, actionable advice in a conversational tone. Use emojis and formatting to make it engaging. 
+        Focus on what the user can actually DO, not just legal theory. Include specific steps and deadlines when relevant.`),
+        new HumanMessage(message)
+      ]);
+      response = aiResponse.content;
+    }
+    
+    // Add helpful footer
+    if (!response.includes('💡 Need help with')) {
+      response += `\n\n💡 **Need help with specific deadlines or next steps?** Just ask! I can calculate exact dates and help you plan your strategy.`;
+    }
+    
     return {
-      messages: [new HumanMessage({ content: response.content, name: 'LegalAgent' })],
+      messages: [new HumanMessage({ content: response, name: 'LegalAgent' })],
     };
   } catch (error) {
     return {
-      messages: [new HumanMessage({ content: `Legal search unavailable: ${error.message}`, name: 'LegalAgent' })],
+      messages: [new HumanMessage({ 
+        content: `I'm having trouble accessing legal databases right now, but I can still help! Consumer law basics: \n\n• FDCPA protects against debt collector abuse\n• FCRA gives you credit report rights\n• Always request validation within 30 days\n• Send important letters via certified mail\n\nWhat specific situation are you dealing with? I can provide targeted advice! 💪`, 
+        name: 'LegalAgent' 
+      })],
     };
   }
 }
@@ -506,18 +742,123 @@ async function calendarAgent(state) {
 
 async function trackingAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
+  const USPSIntegration = require('../utils/uspsIntegration');
+  const ConsumerLawDeadlines = require('../utils/consumerLawDeadlines');
+  
   try {
+    const usps = new USPSIntegration();
+    const msg = message.toLowerCase();
+    
     // Extract tracking number if present
     const trackingMatch = message.match(/\b[A-Z0-9]{10,}\b/);
+    
     if (trackingMatch) {
-      console.log(`Tracking agent found tracking number: ${trackingMatch[0]}`);
-      const content = `I found a potential tracking number: ${trackingMatch[0]}. To track your USPS certified mail, please visit https://tools.usps.com/go/TrackConfirmAction and enter this number, or call 1-800-275-8777 for assistance.`;
+      const trackingNumber = trackingMatch[0];
+      console.log(`Tracking certified mail: ${trackingNumber}`);
+      
+      // Get real tracking info from USPS
+      const trackingInfo = await usps.trackPackage(trackingNumber);
+      
+      let response = `📦 **Tracking ${trackingNumber}**\n\n`;
+      
+      if (trackingInfo.error) {
+        response += `I couldn't get live tracking data right now, but here's what you can do:\n\n`;
+        response += `🔗 **Check Status**: ${trackingInfo.fallback}\n\n`;
+        response += trackingInfo.advice || "";
+      } else {
+        response += `**Status**: ${trackingInfo.status}\n`;
+        if (trackingInfo.deliveryDate) {
+          response += `**Delivered**: ${trackingInfo.deliveryDate}\n\n`;
+          
+          // Calculate legal deadlines based on delivery
+          if (msg.includes('fdcpa') || msg.includes('debt') || msg.includes('validation')) {
+            const deadlines = ConsumerLawDeadlines.calculateFDCPADeadlines(trackingInfo.deliveryDate, true);
+            response += `⚖️ **FDCPA Deadlines** (based on delivery date):\n`;
+            response += `• Your validation request deadline: **${deadlines.consumerValidationDeadline}**\n`;
+            response += `• Collection must cease by: **${deadlines.collectionCeaseDate}**\n\n`;
+            response += deadlines.advice;
+          } else if (msg.includes('fcra') || msg.includes('credit') || msg.includes('dispute')) {
+            const deadlines = ConsumerLawDeadlines.calculateFCRADeadlines(trackingInfo.deliveryDate, 'certified');
+            response += `⚖️ **FCRA Deadlines** (based on delivery date):\n`;
+            response += `• Credit bureau must respond by: **${deadlines.investigationDeadline}**\n`;
+            response += `• Results must be provided by: **${deadlines.resultsDeadline}**\n\n`;
+            response += deadlines.advice;
+          }
+        } else {
+          response += `**Latest Update**: ${trackingInfo.events?.[0]?.status || 'In transit'}\n\n`;
+        }
+        
+        response += trackingInfo.legalAdvice + "\n\n";
+        response += `💡 **Next Steps**: ${trackingInfo.nextSteps}`;
+      }
+      
       return {
-        messages: [new HumanMessage({ content, name: 'TrackingAgent' })],
+        messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
       };
     }
-    // No tracking number found - ask user for it
-    const content = 'I can help you track your mail! Please provide your tracking number and I\'ll assist you with tracking information.';
+    
+    // Handle questions about mailing strategies
+    if (msg.includes('should i send') || msg.includes('how to send') || msg.includes('certified mail')) {
+      let disputeType = 'FDCPA_validation';
+      if (msg.includes('credit') || msg.includes('fcra')) disputeType = 'FCRA_dispute';
+      if (msg.includes('cease') || msg.includes('stop')) disputeType = 'cease_desist';
+      
+      const recommendations = USPSIntegration.getMailingRecommendations(disputeType);
+      const timeframes = USPSIntegration.estimateDeliveryTimeframes(recommendations.mailType);
+      
+      let response = `📮 **Mailing Strategy for Your Dispute**\n\n`;
+      response += `**Recommended Method**: ${recommendations.mailType.toUpperCase()} with return receipt\n`;
+      response += `**Why**: ${recommendations.advice}\n\n`;
+      response += `⏰ **Estimated Delivery**: ${timeframes.estimatedDelivery.earliest} to ${timeframes.estimatedDelivery.latest}\n`;
+      response += `${timeframes.legalAdvice}\n\n`;
+      response += `📋 **Important**: ${recommendations.template}`;
+      
+      return {
+        messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
+      };
+    }
+    
+    // Handle deadline calculations without tracking numbers
+    if (msg.includes('deadline') || msg.includes('when') || msg.includes('how long')) {
+      let response = `⏰ **Consumer Law Deadlines**\n\n`;
+      
+      if (msg.includes('fdcpa') || msg.includes('debt')) {
+        response += `**FDCPA Validation Requests**:\n`;
+        response += `• You have **30 days** from first contact to request validation\n`;
+        response += `• Debt collector must **stop collection** during validation period\n`;
+        response += `• Send via **certified mail** for proof of delivery\n\n`;
+        response += `💡 **Pro Tip**: The 30-day clock starts when you RECEIVE their notice, not when they send it.`;
+      } else if (msg.includes('fcra') || msg.includes('credit')) {
+        response += `**FCRA Credit Disputes**:\n`;
+        response += `• Credit bureaus have **30 days** to investigate\n`;
+        response += `• Extended to **45 days** if you provide additional info\n`;
+        response += `• Must provide results within **5 days** of completion\n\n`;
+        response += `💡 **Pro Tip**: Online disputes are valid, but certified mail provides better documentation.`;
+      } else {
+        response += `I can help you calculate specific deadlines! Tell me:\n`;
+        response += `• Is this for FDCPA (debt collection) or FCRA (credit report)?\n`;
+        response += `• When did you receive their notice or when do you plan to send your dispute?\n`;
+        response += `• Did you send it certified mail?`;
+      }
+      
+      return {
+        messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
+      };
+    }
+    
+    // Default helpful response
+    const content = `📬 **I'm your mail tracking and deadline assistant!**\n\n` +
+      `I can help you with:\n` +
+      `• 📦 **Track certified mail** - Just give me your tracking number\n` +
+      `• ⏰ **Calculate legal deadlines** - For FDCPA and FCRA disputes\n` +
+      `• 📮 **Mailing advice** - Best practices for legal documents\n` +
+      `• 🎯 **Strategy tips** - When and how to send dispute letters\n\n` +
+      `**What would you like help with?** Try saying:\n` +
+      `• "Track my certified mail [tracking number]"\n` +
+      `• "When is my FDCPA deadline?"\n` +
+      `• "Should I send this certified mail?"\n` +
+      `• "How long do credit bureaus have to respond?"`;
+    
     return {
       messages: [new HumanMessage({ content, name: 'TrackingAgent' })],
     };
@@ -525,7 +866,7 @@ async function trackingAgent(state) {
     console.error('Tracking agent error:', error);
     return {
       messages: [new HumanMessage({
-        content: `I'm having trouble with tracking right now. Please visit usps.com directly with your tracking number.`,
+        content: `I'm having trouble right now, but I can still help! Visit https://tools.usps.com for tracking, and remember: certified mail is your best friend for legal disputes. Keep those receipts! 📋`,
         name: 'TrackingAgent'
       })],
     };
