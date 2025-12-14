@@ -153,7 +153,7 @@ async function supervisor(state) {
 }
 
 // Agent nodes
-let TavilySearch, enhancedLegalSearch, sendEmailTool, sendDisputeLetterTool, uspsTrackingTool, genericTrackingTool;
+let TavilySearch, enhancedLegalSearch, sendEmailTool, sendDisputeLetterTool;
 
 try {
   TavilySearch = require('@langchain/tavily').TavilySearch;
@@ -174,14 +174,6 @@ try {
   sendDisputeLetterTool = emailTools.sendDisputeLetterTool;
 } catch (error) {
   console.warn('Email tools not available:', error.message);
-}
-
-try {
-  const trackingTools = require('../trackingTools');
-  uspsTrackingTool = trackingTools.uspsTrackingTool;
-  genericTrackingTool = trackingTools.genericTrackingTool;
-} catch (error) {
-  console.warn('Tracking tools not available:', error.message);
 }
 
 let searchTool = null;
@@ -227,9 +219,33 @@ async function reportAgent(state) {
        msg.includes('credit report') || msg.includes('document')) && userId && supabase) {
     
     try {
-      // Get user's most recent uploaded file
+      // FIRST: Check if we already have an analysis for the most recent file
+      const { data: existingAnalyses, error: analysesError } = await supabase
+        .from('report_analyses')
+        .select('*')
+        .eq('user_id', userId)
+        .order('processed_at', { ascending: false })
+        .limit(1);
+      
+      if (!analysesError && existingAnalyses && existingAnalyses.length > 0) {
+        const latestAnalysis = existingAnalyses[0];
+        // Check if the analysis is recent (within last hour) and file still exists
+        const analysisAge = Date.now() - new Date(latestAnalysis.processed_at).getTime();
+        const isRecent = analysisAge < (60 * 60 * 1000); // 1 hour
+        
+        if (isRecent) {
+          return {
+            messages: [new HumanMessage({ 
+              content: `📄 **Recent Analysis Available**\n\n${latestAnalysis.analysis.detailed_analysis || latestAnalysis.analysis.summary}\n\n---\n*Using cached analysis from ${new Date(latestAnalysis.processed_at).toLocaleString()}*`, 
+              name: 'ReportAgent' 
+            })],
+          };
+        }
+      }
+      
+      // SECOND: If no recent analysis, get the most recent uploaded file
       const { data: files, error: filesError } = await supabase.storage
-        .from('documents')
+        .from('credit-reports') // Primary bucket for credit reports
         .list(userId, { limit: 1, sortBy: { column: 'created_at', order: 'desc' } });
       
       if (files && files.length > 0) {
@@ -300,33 +316,38 @@ Format your response with clear sections and highlighting.`),
     }
   }
   
-  // Check if user wants to analyze a specific file by name
-  const analyzeFileMatch = message.match(/analyze file (.+)/i);
-  if (analyzeFileMatch && userId && supabase) {
-    const fileName = analyzeFileMatch[1].trim();
+  // Check if user wants to search their documents
+  const searchMatch = message.match(/search (?:my |for )(.+?)(?: in (?:my )?documents?)?$/i);
+  if (searchMatch && userId && supabase) {
+    const searchQuery = searchMatch[1].trim();
     try {
-      const filePath = `${userId}/${fileName}`;
-      const { extractText, downloadFromStorage } = require('../reportProcessor');
-      const buffer = await downloadFromStorage(filePath);
-      const extractedText = await extractText(buffer, fileName);
-      
-      // Enhanced analysis with highlighting
-      const detailedAnalysis = await callAI([
-        new SystemMessage(`Analyze this credit report and highlight violations with 🚨, errors with ⚠️, and action items with ✅. Quote specific text from the report.`),
-        new HumanMessage(`Credit report content:\n\n${extractedText}`)
-      ]);
-      
+      const { searchUserDocuments } = require('../documentSearch');
+      const results = await searchUserDocuments(userId, searchQuery, 3);
+
+      if (results.length === 0) {
+        return {
+          messages: [new HumanMessage({
+            content: `🔍 **Document Search Results**\n\nNo documents found containing "${searchQuery}". Try uploading some documents first or rephrase your search.`,
+            name: 'ReportAgent'
+          })],
+        };
+      }
+
+      const resultText = results.map((result, index) =>
+        `${index + 1}. **${result.file_name}** (Relevance: ${(result.similarity * 100).toFixed(0)}%)\n   ${result.preview}`
+      ).join('\n\n');
+
       return {
-        messages: [new HumanMessage({ 
-          content: `📄 **Analysis of ${fileName}**\n\n${detailedAnalysis.content}`, 
-          name: 'ReportAgent' 
+        messages: [new HumanMessage({
+          content: `🔍 **Document Search Results for "${searchQuery}"**\n\n${resultText}\n\n---\n*Ask me to analyze any of these files for more details.*`,
+          name: 'ReportAgent'
         })],
       };
     } catch (error) {
       return {
-        messages: [new HumanMessage({ 
-          content: `Error analyzing ${fileName}: ${error.message}`, 
-          name: 'ReportAgent' 
+        messages: [new HumanMessage({
+          content: `Error searching documents: ${error.message}`,
+          name: 'ReportAgent'
         })],
       };
     }
@@ -345,7 +366,7 @@ Format your response with clear sections and highlighting.`),
     
     try {
       const { data: files } = await supabase.storage
-        .from('documents')
+        .from('credit-reports') // Primary bucket for credit reports
         .list(userId, { limit: 10, sortBy: { column: 'created_at', order: 'desc' } });
       
       if (files && files.length > 0) {
@@ -488,17 +509,15 @@ async function trackingAgent(state) {
   try {
     // Extract tracking number if present
     const trackingMatch = message.match(/\b[A-Z0-9]{10,}\b/);
-    if (trackingMatch && uspsTrackingTool) {
-      console.log(`Tracking agent using USPS API for: ${trackingMatch[0]}`);
-      const result = await uspsTrackingTool.invoke(trackingMatch[0]);
+    if (trackingMatch) {
+      console.log(`Tracking agent found tracking number: ${trackingMatch[0]}`);
+      const content = `I found a potential tracking number: ${trackingMatch[0]}. To track your USPS certified mail, please visit https://tools.usps.com/go/TrackConfirmAction and enter this number, or call 1-800-275-8777 for assistance.`;
       return {
-        messages: [new HumanMessage({ content: result, name: 'TrackingAgent' })],
+        messages: [new HumanMessage({ content, name: 'TrackingAgent' })],
       };
     }
     // No tracking number found - ask user for it
-    const content = uspsTrackingTool 
-      ? 'I can help you track your USPS certified mail! Please provide your tracking number so I can check the status using the USPS API.'
-      : 'I can help you track your mail! Please provide your tracking number and I\'ll assist you with tracking information.';
+    const content = 'I can help you track your mail! Please provide your tracking number and I\'ll assist you with tracking information.';
     return {
       messages: [new HumanMessage({ content, name: 'TrackingAgent' })],
     };
@@ -506,7 +525,7 @@ async function trackingAgent(state) {
     console.error('Tracking agent error:', error);
     return {
       messages: [new HumanMessage({
-        content: `I'm having trouble accessing the tracking system right now. Please visit usps.com directly and enter your tracking number for the most up-to-date information.`,
+        content: `I'm having trouble with tracking right now. Please visit usps.com directly with your tracking number.`,
         name: 'TrackingAgent'
       })],
     };

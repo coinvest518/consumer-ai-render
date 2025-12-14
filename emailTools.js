@@ -3,9 +3,9 @@ const { DynamicTool } = require('@langchain/core/tools');
 
 // SMTP transporter using Render env vars
 const createTransporter = () => {
-  return nodemailer.createTransporter({
+  return nodemailer.createTransport({
     host: process.env.SMTP_HOST,
-    port: process.env.SMTP_PORT,
+    port: process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : undefined,
     secure: process.env.SMTP_SECURE === 'true',
     auth: {
       user: process.env.SMTP_USER,

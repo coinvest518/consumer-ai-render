@@ -162,14 +162,20 @@ async function emailAgent(state) {
 
 async function trackingAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const tracking = await model.invoke([
-    new SystemMessage('Track certified mail and provide delivery updates.'),
-    new HumanMessage(message)
-  ]);
-  return {
-    messages: [{ role: 'assistant', content: tracking.content }],
-    toolResults: [{ tool: 'tracking', result: 'Tracking info retrieved' }]
-  };
+  const trackingMatch = message.match(/\b[A-Z0-9]{10,}\b/);
+  if (trackingMatch) {
+    const response = `I found a potential tracking number: ${trackingMatch[0]}. To track your USPS certified mail, please visit https://tools.usps.com/go/TrackConfirmAction and enter this number, or call 1-800-275-8777 for assistance.`;
+    return {
+      messages: [{ role: 'assistant', content: response }],
+      toolResults: [{ tool: 'tracking', result: 'Tracking guidance provided' }]
+    };
+  } else {
+    const response = 'I can help you track your mail! Please provide your tracking number and I\'ll assist you with tracking information.';
+    return {
+      messages: [{ role: 'assistant', content: response }],
+      toolResults: [{ tool: 'tracking', result: 'Tracking guidance provided' }]
+    };
+  }
 }
 
 // Agent executor

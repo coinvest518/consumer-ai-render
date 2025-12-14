@@ -518,6 +518,9 @@ const processStorageEvent = async (event) => {
         completed_at: new Date().toISOString()
       }).eq('stripe_session_id', session.id);
 
+      // Ensure storage_limits exists for this user to avoid PGRST116 errors
+      await ensureDefaultStorageLimits(userId);
+
       const { data: currentLimits, error: limitsError } = await supabase
         .from('storage_limits')
         .select('*')
@@ -551,6 +554,60 @@ const processStorageEvent = async (event) => {
     console.error('Error processing storage/webhook event asynchronously:', error);
   }
 };
+
+// Ensure default storage_limits row exists for a user and dedupe duplicates
+async function ensureDefaultStorageLimits(userId) {
+  if (!supabase || !userId) return null;
+
+  try {
+    const { data, error } = await supabase
+      .from('storage_limits')
+      .select('*')
+      .eq('user_id', userId);
+
+    if (error) {
+      console.error('Error checking storage_limits for user:', error);
+      return null;
+    }
+
+    if (!data || data.length === 0) {
+      // insert default row
+      const defaults = {
+        user_id: userId,
+        max_storage_bytes: 1073741824, // 1GB default
+        used_storage_bytes: 0,
+        max_files: 200,
+        used_files: 0,
+        is_premium: false,
+        tier_name: 'basic',
+        created_at: new Date().toISOString()
+      };
+      const { data: inserted, error: insertErr } = await supabase
+        .from('storage_limits')
+        .insert([defaults])
+        .select()
+        .maybeSingle();
+      if (insertErr) console.error('Failed to insert default storage_limits:', insertErr);
+      return inserted || defaults;
+    }
+
+    if (data.length > 1) {
+      // keep the first, remove duplicates
+      const keep = data[0];
+      const dupIds = data.slice(1).map(r => r.id).filter(Boolean);
+      if (dupIds.length > 0) {
+        await supabase.from('storage_limits').delete().in('id', dupIds);
+        console.warn(`Removed ${dupIds.length} duplicate storage_limits rows for user ${userId}`);
+      }
+      return keep;
+    }
+
+    return data[0];
+  } catch (err) {
+    console.error('ensureDefaultStorageLimits error:', err);
+    return null;
+  }
+}
 
 // Main API handler
 module.exports = async function handler(req, res) {
@@ -757,6 +814,105 @@ module.exports = async function handler(req, res) {
       }
     }
 
+    // Ensure storage limits endpoint - creates defaults if missing
+    if (path === 'storage/ensure') {
+      const userId = req.method === 'GET' ? req.query.user_id : req.body.user_id;
+      if (!userId) return res.status(400).json({ error: 'Missing user_id' });
+
+      try {
+        const row = await ensureDefaultStorageLimits(userId);
+        return res.status(200).json({ data: row });
+      } catch (err) {
+        console.error('storage/ensure error:', err);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // Supabase DB / Storage webhook endpoint
+    if (path === 'supabase/webhook') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+      // Optional secret validation - configure SUPABASE_WEBHOOK_SECRET in .env
+      const authHeader = req.headers.authorization || '';
+      if (process.env.SUPABASE_WEBHOOK_SECRET) {
+        const expected = `Bearer ${process.env.SUPABASE_WEBHOOK_SECRET}`;
+        if (authHeader !== expected) {
+          console.warn('Supabase webhook rejected due to invalid Authorization header');
+          return res.status(401).json({ error: 'Invalid webhook signature' });
+        }
+      }
+
+      try {
+        const payload = req.body;
+
+        // Common Supabase DB webhook shape: { table, event, record }
+        if (payload && payload.table && payload.event && payload.record) {
+          const { table, event, record } = payload;
+          console.log(`Supabase webhook: table=${table} event=${event}`);
+
+          // If a new file row is inserted, try to find a file path and trigger processing
+          if (event === 'INSERT') {
+            const filePath = record.file_path || record.path || record.name || record.object_key || record.url;
+            const userId = record.user_id || record.owner || null;
+            if (filePath) {
+              // Ensure storage_limits exists for this user before processing
+              if (userId) await ensureDefaultStorageLimits(userId);
+
+              // Fire-and-forget processing
+              (async () => {
+                try {
+                  const { processCreditReport } = require('./reportProcessor');
+                  const result = await processCreditReport(filePath);
+                  console.log('Triggered report processing from Supabase webhook for file:', filePath);
+
+                  // Optionally store analysis results in DB if supabase client is available
+                  if (supabase && userId) {
+                    await supabase.from('report_analyses').insert({
+                      user_id: userId,
+                      file_path: filePath,
+                      analysis: result.analysis || result,
+                      processed_at: new Date().toISOString()
+                    }).catch(err => console.error('Failed to save analysis:', err));
+                  }
+                } catch (err) {
+                  console.error('Error processing file from Supabase webhook:', err);
+                }
+              })();
+            }
+          }
+
+          return res.status(200).json({ received: true });
+        }
+
+        // Storage (object) events may use a different shape
+        if (payload && payload.eventType && payload.data) {
+          // Example: { eventType: 'object_created', data: { bucket, name, ... } }
+          const name = payload.data.name || payload.data.path || payload.data.key;
+          const bucket = payload.data.bucket || payload.data.bucketId;
+          if (name) {
+            const filePath = `${bucket}/${name}`;
+            (async () => {
+              try {
+                const { processCreditReport } = require('./reportProcessor');
+                await processCreditReport(filePath);
+                console.log('Processed storage object via Supabase webhook:', filePath);
+              } catch (err) {
+                console.error('Error processing storage object:', err);
+              }
+            })();
+            return res.status(200).json({ received: true });
+          }
+        }
+
+        // Unknown payload
+        console.warn('Supabase webhook received unknown payload shape');
+        return res.status(400).json({ error: 'Unknown webhook payload' });
+      } catch (err) {
+        console.error('Error handling Supabase webhook:', err);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
     // Fallback for unhandled paths
     else {
       return res.status(404).json({
@@ -773,4 +929,175 @@ module.exports = async function handler(req, res) {
       }
     });
   }
+
+    // File upload endpoint - associates files with authenticated users
+    if (path === 'upload') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+      // Get user ID from header (set by frontend authentication)
+      const userId = req.headers['user-id'];
+      if (!userId) {
+        return res.status(401).json({ error: 'User authentication required' });
+      }
+
+      try {
+        // Check storage limits before upload
+        await ensureDefaultStorageLimits(userId);
+        const { data: limits, error: limitsError } = await supabase
+          .from('storage_limits')
+          .select('*')
+          .eq('user_id', userId)
+          .single();
+
+        if (limitsError && limitsError.code !== 'PGRST116') {
+          console.error('Error checking storage limits:', limitsError);
+          return res.status(500).json({ error: 'Failed to check storage limits' });
+        }
+
+        const currentLimits = limits || {
+          max_storage_bytes: 1073741824, // 1GB default
+          used_storage_bytes: 0,
+          max_files: 200,
+          used_files: 0
+        };
+
+        // Check file count limit
+        if (currentLimits.used_files >= currentLimits.max_files) {
+          return res.status(400).json({
+            error: 'File limit exceeded',
+            details: `Maximum ${currentLimits.max_files} files allowed`
+          });
+        }
+
+        // For now, expect file to be uploaded directly to Supabase storage
+        // Frontend should upload to credit-reports/{userId}/filename
+        // This endpoint just validates and triggers processing
+        const { filePath, fileName } = req.body;
+
+        if (!filePath || !fileName) {
+          return res.status(400).json({
+            error: 'Missing file information',
+            details: 'filePath and fileName are required'
+          });
+        }
+
+        // Validate file path format (should be userId/filename)
+        const expectedPrefix = `${userId}/`;
+        if (!filePath.startsWith(expectedPrefix)) {
+          return res.status(400).json({
+            error: 'Invalid file path',
+            details: `File path must start with user ID: ${expectedPrefix}`
+          });
+        }
+
+        // Verify file exists in storage
+        const { data: fileData, error: fileError } = await supabase.storage
+          .from('credit-reports')
+          .list(userId, { limit: 1000 });
+
+        if (fileError) {
+          console.error('Error listing user files:', fileError);
+          return res.status(500).json({ error: 'Failed to verify file upload' });
+        }
+
+        const fileExists = fileData.some(file => file.name === fileName);
+        if (!fileExists) {
+          return res.status(404).json({
+            error: 'File not found',
+            details: 'File was not successfully uploaded to storage'
+          });
+        }
+
+        // Update storage usage
+        const fileInfo = fileData.find(file => file.name === fileName);
+        const fileSize = fileInfo?.metadata?.size || 0;
+
+        await supabase.from('storage_limits').update({
+          used_files: (currentLimits.used_files || 0) + 1,
+          used_storage_bytes: (currentLimits.used_storage_bytes || 0) + fileSize,
+          updated_at: new Date().toISOString()
+        }).eq('user_id', userId);
+
+        // Trigger report processing (fire-and-forget)
+        (async () => {
+          try {
+            const { processCreditReport } = require('./reportProcessor');
+            const result = await processCreditReport(filePath);
+
+            // Store analysis results
+            await supabase.from('report_analyses').insert({
+              user_id: userId,
+              file_path: filePath,
+              file_name: fileName,
+              extracted_text: result.extractedText?.substring(0, 2000),
+              analysis: result.analysis,
+              violations_found: result.analysis?.violations?.length > 0,
+              errors_found: result.analysis?.errors?.length > 0
+            });
+
+            console.log('✅ File processed and analysis stored:', filePath);
+          } catch (processError) {
+            console.error('❌ Error processing uploaded file:', processError);
+          }
+        })();
+
+        return res.status(200).json({
+          success: true,
+          message: 'File uploaded and processing started',
+          filePath,
+          fileName,
+          userId
+        });
+
+      } catch (error) {
+        console.error('Upload processing error:', error);
+        return res.status(500).json({
+          error: 'Failed to process upload',
+          details: error.message
+        });
+      }
+    }
+
+    // Public storage limits lookup (safe to call from frontend)
+    if (path === 'storage/limits') {
+      if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+
+      // Parse query params
+      const queryString = req.url.split('?')[1] || '';
+      const params = new URLSearchParams(queryString);
+      const userId = params.get('user_id');
+
+      if (!userId) return res.status(400).json({ error: 'user_id query parameter is required' });
+
+      try {
+        // Use maybeSingle to avoid PostgREST PGRST116 when no row exists
+        const { data, error } = await supabase
+          .from('storage_limits')
+          .select('*')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (error) {
+          console.error('Error fetching storage limits:', error);
+          return res.status(500).json({ error: error.message });
+        }
+
+        // If no limits found, return sensible defaults rather than a 406/404
+        if (!data) {
+          return res.status(200).json({
+            user_id: userId,
+            max_storage_bytes: 0,
+            used_storage_bytes: 0,
+            max_files: 0,
+            used_files: 0,
+            is_premium: false
+          });
+        }
+
+        return res.status(200).json(data);
+      } catch (err) {
+        console.error('Unexpected error fetching storage limits:', err);
+        return res.status(500).json({ error: err.message });
+      }
+    }
 };
