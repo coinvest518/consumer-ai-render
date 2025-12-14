@@ -55,7 +55,9 @@ const io = new Server(server, {
     origin: ['https://consumerai.info', 'http://localhost:3000', 'https://consumer-ai-render.onrender.com'],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     credentials: true
-  }
+  },
+  transports: ['websocket', 'polling'],
+  allowEIO3: true
 });
 global.io = io;
 const PORT = process.env.PORT || 3001;
@@ -108,9 +110,35 @@ app.use('/api', apiLimiter, (req, res) => {
   return apiHandler(req, res);
 });
 
-// Socket.IO connection event (optional, for debugging)
+// Enhanced Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('Socket.IO client connected:', socket.id);
+  
+  // Send connection confirmation
+  socket.emit('connection-confirmed', {
+    socketId: socket.id,
+    timestamp: new Date().toISOString()
+  });
+  
+  // Handle disconnection
+  socket.on('disconnect', (reason) => {
+    console.log('Socket.IO client disconnected:', socket.id, 'Reason:', reason);
+  });
+  
+  // Handle connection errors
+  socket.on('error', (error) => {
+    console.error('Socket.IO error for client', socket.id, ':', error);
+  });
+  
+  // Test event handler
+  socket.on('test-connection', (data) => {
+    console.log('Test connection received from', socket.id, ':', data);
+    socket.emit('test-response', {
+      message: 'Connection working!',
+      receivedData: data,
+      timestamp: new Date().toISOString()
+    });
+  });
 });
 
 // Start server

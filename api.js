@@ -275,6 +275,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       
       // Emit agent selection
       if (socketId && global.io) {
+        console.log('Emitting agent-step to socket:', socketId);
         global.io.to(socketId).emit('agent-step', {
           tool: 'supervisor',
           toolInput: message,
@@ -285,6 +286,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       
       // Emit thinking start
       if (socketId && global.io) {
+        console.log('Emitting agent-thinking-start to socket:', socketId);
         global.io.to(socketId).emit('agent-thinking-start');
       }
 
@@ -337,6 +339,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
 
     // Emit thinking complete
     if (socketId && global.io) {
+      console.log('Emitting agent-thinking-complete to socket:', socketId);
       global.io.to(socketId).emit('agent-thinking-complete', {
         response: aiResponse.content
       });

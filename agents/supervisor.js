@@ -78,13 +78,7 @@ Given the user request, respond with the agent to act next:
 - tracking: Track mail delivery
 When finished, respond with FINISH.`;
 
-const routingTool = {
-  name: 'route',
-  description: 'Select the next agent.',
-  schema: z.object({
-    next: z.enum([END, ...members]),
-  }),
-};
+
 
 const prompt = ChatPromptTemplate.fromMessages([
   ['system', systemPrompt],
@@ -92,28 +86,38 @@ const prompt = ChatPromptTemplate.fromMessages([
   ['human', 'Who should act next? Select one of: {options}'],
 ]);
 
-// Fast supervisor with single-step routing
-function simpleSupervisor(state) {
-  const message = state.messages[state.messages.length - 1].content.toLowerCase();
-  
-  // Priority routing for tracking requests
-  if (message.includes('track') || message.includes('certified mail') || 
-      message.includes('usps') || message.includes('delivery') || 
-      message.includes('package') || message.includes('mail status') ||
-      message.includes('tracking number')) {
-    return { next: 'tracking' };
+// AI-powered supervisor using prompt
+async function supervisor(state) {
+  try {
+    if (!model) {
+      // Fallback to simple routing if AI unavailable
+      const message = state.messages[state.messages.length - 1].content.toLowerCase();
+      if (message.includes('track')) return { next: 'tracking' };
+      if (message.includes('search')) return { next: 'search' };
+      if (message.includes('report')) return { next: 'report' };
+      if (message.includes('letter')) return { next: 'letter' };
+      if (message.includes('legal')) return { next: 'legal' };
+      if (message.includes('email')) return { next: 'email' };
+      if (message.includes('calendar')) return { next: 'calendar' };
+      return { next: END };
+    }
+
+    const response = await prompt.pipe(model).invoke({
+      messages: state.messages,
+      options: members.join(', ')
+    });
+    
+    const content = response.content.toLowerCase();
+    for (const member of members) {
+      if (content.includes(member)) {
+        return { next: member };
+      }
+    }
+    return { next: END };
+  } catch (error) {
+    console.error('Supervisor error:', error);
+    return { next: END };
   }
-  
-  // Other direct routing - no loops, single agent call
-  if (message.includes('search') || message.includes('find')) return { next: 'search' };
-  if (message.includes('report') || message.includes('credit')) return { next: 'report' };
-  if (message.includes('letter') || message.includes('dispute')) return { next: 'letter' };
-  if (message.includes('legal') || message.includes('law')) return { next: 'legal' };
-  if (message.includes('email') || message.includes('send')) return { next: 'email' };
-  if (message.includes('calendar') || message.includes('remind')) return { next: 'calendar' };
-  
-  // Always end after one agent call
-  return { next: END };
 }
 
 // Agent nodes
@@ -312,41 +316,35 @@ async function trackingAgent(state) {
   try {
     // Extract tracking number if present
     const trackingMatch = message.match(/\b[A-Z0-9]{10,}\b/);
-    
     if (trackingMatch && uspsTrackingTool) {
       console.log(`Tracking agent using USPS API for: ${trackingMatch[0]}`);
       const result = await uspsTrackingTool.invoke(trackingMatch[0]);
       return {
         messages: [new HumanMessage({ content: result, name: 'TrackingAgent' })],
       };
-    } else if (genericTrackingTool) {
-      console.log('Tracking agent using generic tracking guidance');
-      const result = await genericTrackingTool.invoke(message);
-      return {
-        messages: [new HumanMessage({ content: result, name: 'TrackingAgent' })],
-      };
-    } else {
-      return {
-        messages: [new HumanMessage({ 
-          content: 'I can help you track USPS certified mail! Please provide your tracking number, or visit usps.com and enter your tracking number to get real-time updates.', 
-          name: 'TrackingAgent' 
-        })],
-      };
     }
+    // No tracking number found - ask user for it
+    const content = uspsTrackingTool 
+      ? 'I can help you track your USPS certified mail! Please provide your tracking number so I can check the status using the USPS API.'
+      : 'I can help you track your mail! Please provide your tracking number and I\'ll assist you with tracking information.';
+    return {
+      messages: [new HumanMessage({ content, name: 'TrackingAgent' })],
+    };
   } catch (error) {
     console.error('Tracking agent error:', error);
     return {
-      messages: [new HumanMessage({ 
-        content: `I'm having trouble accessing the tracking system right now. Please visit usps.com directly and enter your tracking number for the most up-to-date information.`, 
-        name: 'TrackingAgent' 
+      messages: [new HumanMessage({
+        content: `I'm having trouble accessing the tracking system right now. Please visit usps.com directly and enter your tracking number for the most up-to-date information.`,
+        name: 'TrackingAgent'
       })],
     };
   }
 }
 
+
 // Create workflow
 const workflow = new StateGraph(AgentState)
-  .addNode('supervisor', simpleSupervisor)
+  .addNode('supervisor', supervisor)
   .addNode('search', searchAgent)
   .addNode('report', reportAgent)
   .addNode('letter', letterAgent)
