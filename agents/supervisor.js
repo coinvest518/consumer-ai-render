@@ -16,6 +16,14 @@ const AgentState = Annotation.Root({
     reducer: (x, y) => y ?? x ?? END,
     default: () => END,
   }),
+  userId: Annotation({
+    reducer: (x, y) => y ?? x,
+    default: () => null,
+  }),
+  supabase: Annotation({
+    reducer: (x, y) => y ?? x,
+    default: () => null,
+  }),
 });
 
 // Initialize Google AI with Gemini 2.5 Flash model
@@ -89,30 +97,54 @@ const prompt = ChatPromptTemplate.fromMessages([
 // AI-powered supervisor using prompt
 async function supervisor(state) {
   try {
-    if (!model) {
-      // Fallback to simple routing if AI unavailable
-      const message = state.messages[state.messages.length - 1].content.toLowerCase();
-      if (message.includes('track')) return { next: 'tracking' };
-      if (message.includes('search')) return { next: 'search' };
-      if (message.includes('report')) return { next: 'report' };
-      if (message.includes('letter')) return { next: 'letter' };
-      if (message.includes('legal')) return { next: 'legal' };
-      if (message.includes('email')) return { next: 'email' };
-      if (message.includes('calendar')) return { next: 'calendar' };
-      return { next: END };
-    }
-
-    const response = await prompt.pipe(model).invoke({
-      messages: state.messages,
-      options: members.join(', ')
-    });
+    const message = state.messages[state.messages.length - 1].content.toLowerCase();
     
-    const content = response.content.toLowerCase();
-    for (const member of members) {
-      if (content.includes(member)) {
-        return { next: member };
+    // Priority routing for specific requests
+    if (message.includes('track') || message.includes('certified mail') || message.includes('usps')) {
+      return { next: 'tracking' };
+    }
+    // High priority for document analysis
+    if (message.includes('analyze') || message.includes('review') || message.includes('my report') ||
+        message.includes('credit report') || message.includes('document') || message.includes('uploaded') ||
+        message.includes('file') || message.includes('violations') || message.includes('errors') ||
+        message.includes('fcra') || message.includes('fdcpa') || message.includes('dispute')) {
+      return { next: 'report' };
+    }
+    if (message.includes('letter') || message.includes('dispute')) {
+      return { next: 'letter' };
+    }
+    if (message.includes('search') || message.includes('find')) {
+      return { next: 'search' };
+    }
+    if (message.includes('legal') || message.includes('law')) {
+      return { next: 'legal' };
+    }
+    if (message.includes('email') || message.includes('send')) {
+      return { next: 'email' };
+    }
+    if (message.includes('calendar') || message.includes('remind')) {
+      return { next: 'calendar' };
+    }
+    
+    // Fallback to AI routing if available
+    if (model) {
+      try {
+        const response = await prompt.pipe(model).invoke({
+          messages: state.messages,
+          options: members.join(', ')
+        });
+        
+        const content = response.content.toLowerCase();
+        for (const member of members) {
+          if (content.includes(member)) {
+            return { next: member };
+          }
+        }
+      } catch (error) {
+        console.error('AI routing failed:', error);
       }
     }
+    
     return { next: END };
   } catch (error) {
     console.error('Supervisor error:', error);
@@ -186,6 +218,70 @@ async function searchAgent(state) {
 
 async function reportAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
+  const userId = state.userId;
+  const supabase = state.supabase;
+  
+  // Auto-analyze most recent file if user asks about reports/documents
+  const msg = message.toLowerCase();
+  if ((msg.includes('analyze') || msg.includes('review') || msg.includes('my report') || 
+       msg.includes('credit report') || msg.includes('document')) && userId && supabase) {
+    
+    try {
+      // Get user's most recent uploaded file
+      const { data: files, error: filesError } = await supabase.storage
+        .from('documents')
+        .list(userId, { limit: 1, sortBy: { column: 'created_at', order: 'desc' } });
+      
+      if (files && files.length > 0) {
+        const latestFile = files[0];
+        const filePath = `${userId}/${latestFile.name}`;
+        
+        // Process the document
+        const { processCreditReport, extractText, downloadFromStorage } = require('../reportProcessor');
+        const buffer = await downloadFromStorage(filePath);
+        const extractedText = await extractText(buffer, latestFile.name);
+        
+        // Enhanced analysis with highlighting
+        const detailedAnalysis = await callAI([
+          new SystemMessage(`You are an expert credit report analyst. Analyze the document and provide:
+
+1. **HIGHLIGHTED VIOLATIONS** - Mark specific violations with 🚨
+2. **OUTLINED ERRORS** - List errors with ⚠️ 
+3. **ACTIONABLE ITEMS** - Steps to take with ✅
+4. **EVIDENCE QUOTES** - Exact text from report with quotation marks
+
+Format your response with clear sections and highlighting.`),
+          new HumanMessage(`Analyze this credit report for FCRA/FDCPA violations and errors:\n\n${extractedText}`)
+        ]);
+        
+        // Store analysis in database
+        const analysisResult = {
+          summary: detailedAnalysis.content.substring(0, 200) + '...',
+          detailed_analysis: detailedAnalysis.content,
+          violations_found: detailedAnalysis.content.includes('🚨'),
+          errors_found: detailedAnalysis.content.includes('⚠️'),
+          file_name: latestFile.name,
+          extracted_text: extractedText.substring(0, 1000) + '...'
+        };
+        
+        await supabase.from('report_analyses').insert({
+          user_id: userId,
+          file_path: filePath,
+          analysis: analysisResult,
+          processed_at: new Date().toISOString()
+        });
+        
+        return {
+          messages: [new HumanMessage({ 
+            content: `📄 **Analysis of ${latestFile.name}**\n\n${detailedAnalysis.content}\n\n---\n*Analysis saved to your account for future reference.*`, 
+            name: 'ReportAgent' 
+          })],
+        };
+      }
+    } catch (error) {
+      console.error('Auto-analysis error:', error);
+    }
+  }
   
   // Check if message contains a file path
   const filePathMatch = message.match(/file_path:\s*(.+)/i);
@@ -202,21 +298,97 @@ async function reportAgent(state) {
         messages: [new HumanMessage({ content: `Error processing credit report: ${error.message}`, name: 'ReportAgent' })],
       };
     }
-  } else {
-    // Fallback to text analysis
+  }
+  
+  // Check if user wants to analyze a specific file by name
+  const analyzeFileMatch = message.match(/analyze file (.+)/i);
+  if (analyzeFileMatch && userId && supabase) {
+    const fileName = analyzeFileMatch[1].trim();
     try {
-      const analysis = await callAI([
-        new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
-        new HumanMessage(message)
+      const filePath = `${userId}/${fileName}`;
+      const { extractText, downloadFromStorage } = require('../reportProcessor');
+      const buffer = await downloadFromStorage(filePath);
+      const extractedText = await extractText(buffer, fileName);
+      
+      // Enhanced analysis with highlighting
+      const detailedAnalysis = await callAI([
+        new SystemMessage(`Analyze this credit report and highlight violations with 🚨, errors with ⚠️, and action items with ✅. Quote specific text from the report.`),
+        new HumanMessage(`Credit report content:\n\n${extractedText}`)
       ]);
+      
       return {
-        messages: [new HumanMessage({ content: analysis.content, name: 'ReportAgent' })],
+        messages: [new HumanMessage({ 
+          content: `📄 **Analysis of ${fileName}**\n\n${detailedAnalysis.content}`, 
+          name: 'ReportAgent' 
+        })],
       };
     } catch (error) {
       return {
-        messages: [new HumanMessage({ content: `Credit report analysis unavailable: ${error.message}`, name: 'ReportAgent' })],
+        messages: [new HumanMessage({ 
+          content: `Error analyzing ${fileName}: ${error.message}`, 
+          name: 'ReportAgent' 
+        })],
       };
     }
+  }
+  
+  // Show available files if user asks generally
+  if (msg.includes('files') || msg.includes('uploaded') || msg.includes('documents')) {
+    if (!userId || !supabase) {
+      return {
+        messages: [new HumanMessage({ 
+          content: `I can analyze credit reports and documents. Please upload a file or provide text for analysis.`, 
+          name: 'ReportAgent' 
+        })],
+      };
+    }
+    
+    try {
+      const { data: files } = await supabase.storage
+        .from('documents')
+        .list(userId, { limit: 10, sortBy: { column: 'created_at', order: 'desc' } });
+      
+      if (files && files.length > 0) {
+        let response = `📁 **Your uploaded documents:**\n\n`;
+        files.forEach((file, idx) => {
+          response += `${idx + 1}. 📄 ${file.name} (${new Date(file.created_at).toLocaleDateString()})\n`;
+        });
+        response += `\n💡 Say "analyze my report" to automatically analyze your most recent upload, or "analyze file [filename]" for a specific file.`;
+        
+        return {
+          messages: [new HumanMessage({ content: response, name: 'ReportAgent' })],
+        };
+      } else {
+        return {
+          messages: [new HumanMessage({ 
+            content: `📁 No documents found. Upload a credit report or document for analysis.`, 
+            name: 'ReportAgent' 
+          })],
+        };
+      }
+    } catch (error) {
+      return {
+        messages: [new HumanMessage({ 
+          content: `Error accessing files: ${error.message}`, 
+          name: 'ReportAgent' 
+        })],
+      };
+    }
+  }
+  
+  // Fallback to text analysis for credit-related questions
+  try {
+    const analysis = await callAI([
+      new SystemMessage('You are a credit report analyst. Analyze the provided text for FCRA violations, errors, and provide actionable advice. Use 🚨 for violations, ⚠️ for errors, and ✅ for action items.'),
+      new HumanMessage(message)
+    ]);
+    return {
+      messages: [new HumanMessage({ content: analysis.content, name: 'ReportAgent' })],
+    };
+  } catch (error) {
+    return {
+      messages: [new HumanMessage({ content: `Credit report analysis unavailable: ${error.message}`, name: 'ReportAgent' })],
+    };
   }
 }
 

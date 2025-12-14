@@ -163,9 +163,16 @@ async function processQueue() {
   }
 }
 
-// Enhanced agent detection with tracking capabilities
+// Enhanced agent detection with document analysis priority
 function detectAgentNeed(message) {
   const msg = message.toLowerCase();
+  
+  // Document analysis triggers (high priority)
+  const documentTriggers = [
+    'analyze', 'review', 'my report', 'credit report', 'document',
+    'uploaded', 'file', 'violations', 'errors', 'fcra', 'fdcpa',
+    'dispute', 'credit bureau', 'equifax', 'experian', 'transunion'
+  ];
   
   // Tracking-specific triggers
   const trackingTriggers = [
@@ -182,22 +189,49 @@ function detectAgentNeed(message) {
     'set reminder', 'calendar event'
   ];
   
-  return trackingTriggers.some(trigger => msg.includes(trigger)) || 
+  return documentTriggers.some(trigger => msg.includes(trigger)) ||
+         trackingTriggers.some(trigger => msg.includes(trigger)) || 
          otherTriggers.some(trigger => msg.includes(trigger));
 }
 
 // Helper to get or create chat history
-function getChatHistory(sessionId) {
+async function getChatHistory(sessionId, userId = null) {
   if (!chatSessions.has(sessionId)) {
-    chatSessions.set(sessionId, [
-      new SystemMessage(
-        "You are ConsumerAI, a helpful assistant specialized in consumer rights, " +
-        "credit disputes, and financial advice. You can also track USPS certified mail and packages " +
-        "using tracking numbers. Be clear, professional, and focused on helping users " +
-        "understand their rights and options. When users ask about tracking mail or packages, " +
-        "let them know you can help with USPS tracking."
-      )
-    ]);
+    const systemMessage = new SystemMessage(
+      "You are ConsumerAI, a helpful assistant specialized in consumer rights, " +
+      "credit disputes, and financial advice. You can also track USPS certified mail and packages " +
+      "using tracking numbers. Be clear, professional, and focused on helping users " +
+      "understand their rights and options. When users ask about tracking mail or packages, " +
+      "let them know you can help with USPS tracking."
+    );
+    
+    const history = [systemMessage];
+    
+    // Load previous messages from database if available
+    if (supabase && userId) {
+      try {
+        const { data, error } = await supabase
+          .from('chat_history')
+          .select('*')
+          .eq('session_id', sessionId)
+          .order('created_at', { ascending: true })
+          .limit(20); // Last 20 messages
+        
+        if (!error && data) {
+          data.forEach(msg => {
+            if (msg.role === 'user') {
+              history.push(new HumanMessage(msg.content));
+            } else if (msg.role === 'assistant') {
+              history.push(new AIMessage(msg.content));
+            }
+          });
+        }
+      } catch (dbError) {
+        console.error('Failed to load chat history from database:', dbError);
+      }
+    }
+    
+    chatSessions.set(sessionId, history);
   }
   return chatSessions.get(sessionId);
 }
@@ -219,7 +253,7 @@ function getQuickResponse(message) {
 }
 
 // Smart message processing with agent detection
-async function processMessage(message, sessionId, socketId = null, useAgents = null) {
+async function processMessage(message, sessionId, socketId = null, useAgents = null, userId = null) {
   try {
     // Check for tracking requests first - these should use agents
     const msg = message.toLowerCase();
@@ -259,7 +293,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       };
     }
     
-    const history = getChatHistory(sessionId);
+    const history = await getChatHistory(sessionId, userId);
     const userMessage = new HumanMessage(message);
     history.push(userMessage);
 
@@ -294,7 +328,9 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
         // Use supervisor graph with timeout
         const result = await Promise.race([
           graph.invoke({
-            messages: [{ role: 'user', content: message }]
+            messages: [{ role: 'user', content: message }],
+            userId: userId,
+            supabase: supabase
           }),
           new Promise((_, reject) => 
             setTimeout(() => reject(new Error('Agent timeout')), 10000)
@@ -333,6 +369,30 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     
     const aiMessage = new AIMessage(aiResponse.content);
     history.push(aiMessage);
+    
+    // Save messages to database
+    if (supabase && userId) {
+      try {
+        await supabase.from('chat_history').insert([
+          {
+            session_id: sessionId,
+            user_id: userId,
+            role: 'user',
+            content: message,
+            created_at: new Date().toISOString()
+          },
+          {
+            session_id: sessionId,
+            user_id: userId,
+            role: 'assistant',
+            content: aiResponse.content,
+            created_at: new Date().toISOString()
+          }
+        ]);
+      } catch (dbError) {
+        console.error('Failed to save messages to database:', dbError);
+      }
+    }
     
     // Cache the response for future use
     setCachedResponse(message, aiResponse.content);
@@ -560,13 +620,13 @@ module.exports = async function handler(req, res) {
       if (req.method === 'GET') return res.status(200).json({ status: 'ok' });
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
       
-      const { message, sessionId, socketId, useAgents } = req.body;
+      const { message, sessionId, socketId, useAgents, userId } = req.body;
       if (!message || !sessionId) {
         return res.status(400).json({ error: 'Missing message or sessionId' });
       }
 
       try {
-        const result = await processMessage(message, sessionId, socketId, useAgents);
+        const result = await processMessage(message, sessionId, socketId, useAgents, userId);
         return res.status(200).json({ data: result });
       } catch (error) {
         console.error('Chat error:', error);
