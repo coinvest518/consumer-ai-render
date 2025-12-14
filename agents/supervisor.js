@@ -96,14 +96,21 @@ const prompt = ChatPromptTemplate.fromMessages([
 function simpleSupervisor(state) {
   const message = state.messages[state.messages.length - 1].content.toLowerCase();
   
-  // Direct routing - no loops, single agent call
+  // Priority routing for tracking requests
+  if (message.includes('track') || message.includes('certified mail') || 
+      message.includes('usps') || message.includes('delivery') || 
+      message.includes('package') || message.includes('mail status') ||
+      message.includes('tracking number')) {
+    return { next: 'tracking' };
+  }
+  
+  // Other direct routing - no loops, single agent call
   if (message.includes('search') || message.includes('find')) return { next: 'search' };
   if (message.includes('report') || message.includes('credit')) return { next: 'report' };
   if (message.includes('letter') || message.includes('dispute')) return { next: 'letter' };
   if (message.includes('legal') || message.includes('law')) return { next: 'legal' };
   if (message.includes('email') || message.includes('send')) return { next: 'email' };
   if (message.includes('calendar') || message.includes('remind')) return { next: 'calendar' };
-  if (message.includes('track') || message.includes('mail')) return { next: 'tracking' };
   
   // Always end after one agent call
   return { next: END };
@@ -305,24 +312,34 @@ async function trackingAgent(state) {
   try {
     // Extract tracking number if present
     const trackingMatch = message.match(/\b[A-Z0-9]{10,}\b/);
+    
     if (trackingMatch && uspsTrackingTool) {
+      console.log(`Tracking agent using USPS API for: ${trackingMatch[0]}`);
       const result = await uspsTrackingTool.invoke(trackingMatch[0]);
       return {
         messages: [new HumanMessage({ content: result, name: 'TrackingAgent' })],
       };
     } else if (genericTrackingTool) {
-      const result = await genericTrackingTool.invoke(JSON.stringify({ trackingNumber: 'N/A', carrier: 'USPS' }));
+      console.log('Tracking agent using generic tracking guidance');
+      const result = await genericTrackingTool.invoke(message);
       return {
         messages: [new HumanMessage({ content: result, name: 'TrackingAgent' })],
       };
     } else {
       return {
-        messages: [new HumanMessage({ content: 'Tracking service not configured', name: 'TrackingAgent' })],
+        messages: [new HumanMessage({ 
+          content: 'I can help you track USPS certified mail! Please provide your tracking number, or visit usps.com and enter your tracking number to get real-time updates.', 
+          name: 'TrackingAgent' 
+        })],
       };
     }
   } catch (error) {
+    console.error('Tracking agent error:', error);
     return {
-      messages: [new HumanMessage({ content: `Tracking error: ${error.message}`, name: 'TrackingAgent' })],
+      messages: [new HumanMessage({ 
+        content: `I'm having trouble accessing the tracking system right now. Please visit usps.com directly and enter your tracking number for the most up-to-date information.`, 
+        name: 'TrackingAgent' 
+      })],
     };
   }
 }

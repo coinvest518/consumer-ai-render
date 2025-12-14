@@ -163,20 +163,27 @@ async function processQueue() {
   }
 }
 
-// More selective agent detection - only for specific tasks
+// Enhanced agent detection with tracking capabilities
 function detectAgentNeed(message) {
   const msg = message.toLowerCase();
   
-  // Only use agents for very specific tasks
-  const specificTriggers = [
+  // Tracking-specific triggers
+  const trackingTriggers = [
+    'track', 'tracking', 'certified mail', 'usps', 'postal service',
+    'delivery status', 'package status', 'mail status', 'where is my',
+    'tracking number', 'delivery confirmation'
+  ];
+  
+  // Other agent triggers
+  const otherTriggers = [
     'search for', 'find information about', 'look up',
     'generate letter', 'create dispute letter',
-    'track package', 'usps tracking',
     'send email', 'email notification',
     'set reminder', 'calendar event'
   ];
   
-  return specificTriggers.some(trigger => msg.includes(trigger));
+  return trackingTriggers.some(trigger => msg.includes(trigger)) || 
+         otherTriggers.some(trigger => msg.includes(trigger));
 }
 
 // Helper to get or create chat history
@@ -185,8 +192,10 @@ function getChatHistory(sessionId) {
     chatSessions.set(sessionId, [
       new SystemMessage(
         "You are ConsumerAI, a helpful assistant specialized in consumer rights, " +
-        "credit disputes, and financial advice. Be clear, professional, and focused on helping users " +
-        "understand their rights and options."
+        "credit disputes, and financial advice. You can also track USPS certified mail and packages " +
+        "using tracking numbers. Be clear, professional, and focused on helping users " +
+        "understand their rights and options. When users ask about tracking mail or packages, " +
+        "let them know you can help with USPS tracking."
       )
     ]);
   }
@@ -201,7 +210,7 @@ function getQuickResponse(message) {
     return 'Hello! I\'m ConsumerAI, your legal assistant for consumer rights and credit disputes. How can I help you today?';
   }
   if (msg.includes('what can you do') || msg.includes('what do you do')) {
-    return 'I can help you with consumer rights, credit disputes, FDCPA/FCRA violations, dispute letters, and legal advice. I can also search for information, track packages, and set reminders.';
+    return 'I can help you with consumer rights, credit disputes, FDCPA/FCRA violations, dispute letters, and legal advice. I can also search for information, track USPS certified mail and packages, send emails, and set reminders.';
   }
   if (msg.includes('how are you') || msg.includes('how do you work')) {
     return 'I\'m doing great! I\'m here to help you with consumer law questions and credit disputes. What would you like assistance with?';
@@ -212,19 +221,27 @@ function getQuickResponse(message) {
 // Smart message processing with agent detection
 async function processMessage(message, sessionId, socketId = null, useAgents = null) {
   try {
-    // Check for quick responses first
-    const quickResponse = getQuickResponse(message);
-    if (quickResponse) {
-      return {
-        message: quickResponse,
-        sessionId,
-        messageId: `${Date.now()}-ai`,
-        created_at: new Date().toISOString(),
-        decisionTrace: {
-          usedAgent: 'quick',
-          steps: ['Quick response']
-        }
-      };
+    // Check for tracking requests first - these should use agents
+    const msg = message.toLowerCase();
+    const isTrackingRequest = msg.includes('track') || msg.includes('certified mail') || 
+                             msg.includes('usps') || msg.includes('delivery') || 
+                             msg.includes('package') || msg.includes('mail status');
+    
+    // Check for quick responses (but not for tracking requests)
+    if (!isTrackingRequest) {
+      const quickResponse = getQuickResponse(message);
+      if (quickResponse) {
+        return {
+          message: quickResponse,
+          sessionId,
+          messageId: `${Date.now()}-ai`,
+          created_at: new Date().toISOString(),
+          decisionTrace: {
+            usedAgent: 'quick',
+            steps: ['Quick response']
+          }
+        };
+      }
     }
     
     // Check cache for repeated questions

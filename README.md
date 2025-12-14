@@ -21,6 +21,8 @@ STRIPE_SECRET_KEY=your_stripe_secret_key
 STRIPE_WEBHOOK_SECRET=your_stripe_webhook_secret
 EMAIL_USER=your_email@gmail.com
 EMAIL_PASS=your_email_app_password
+USPS_OAUTH_CLIENT_ID=your_usps_client_id
+USPS_OAUTH_CLIENT_SECRET=your_usps_client_secret
 # Optional: LangSmith for evaluation
 LANGSMITH_API_KEY=your_langsmith_api_key_here
 LANGSMITH_TRACING=true
@@ -44,6 +46,8 @@ npm start
 - `POST /api/storage/webhook` - Handle storage-related webhook events
 - `POST /api/report/analyze` - Analyze credit report files for violations and errors
 - `POST /api/agents` - Process agent messages
+- `GET /api/user/stats` - Get user statistics and limits
+- `GET /api/user/credits` - Get user credit balance
 
 ## Deployment
 
