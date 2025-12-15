@@ -344,7 +344,9 @@ function detectAgentNeed(message) {
     'analyze', 'review', 'my report', 'credit report', 'document',
     'uploaded', 'file', 'violations', 'errors', 'fcra', 'fdcpa',
     'dispute', 'credit bureau', 'equifax', 'experian', 'transunion',
-    'access', 'can you access', 'upload', 'documents', 'files'
+    'access', 'can you access', 'upload', 'documents', 'files',
+    'get my', 'see my', 'check my', 'look at my', 'find my',
+    'do you have', 'show me', 'pull up', 'retrieve'
   ];
   
   // Tracking-specific triggers
@@ -369,9 +371,15 @@ function detectAgentNeed(message) {
 
 // Helper to get user's recent files for AI context
 async function getUserFilesContext(userId) {
-  if (!supabase || !userId) return '';
+  console.log('getUserFilesContext called with userId:', userId, 'supabase available:', !!supabase);
+  
+  if (!supabase || !userId) {
+    console.log('No supabase or userId, returning empty context');
+    return 'User has no uploaded files yet.';
+  }
   
   try {
+    console.log('Fetching user files from database...');
     const { data, error } = await supabase
       .from('report_analyses')
       .select('file_name, processed_at, analysis')
@@ -379,7 +387,15 @@ async function getUserFilesContext(userId) {
       .order('processed_at', { ascending: false })
       .limit(3);
 
-    if (error || !data || data.length === 0) {
+    console.log('Database query result:', { data, error });
+
+    if (error) {
+      console.error('Database error in getUserFilesContext:', error);
+      return 'Error accessing user files.';
+    }
+
+    if (!data || data.length === 0) {
+      console.log('No files found for user');
       return 'User has no uploaded files yet.';
     }
 
@@ -387,13 +403,16 @@ async function getUserFilesContext(userId) {
       const violations = file.analysis?.violations?.length || 0;
       const errors = file.analysis?.errors?.length || 0;
       const status = file.analysis ? 'analyzed' : 'processing';
-      const date = new Date(file.processed_at).toLocaleDateString();
+      const date = file.processed_at ? new Date(file.processed_at).toLocaleDateString() : 'Unknown date';
       
-      return `${index + 1}. ${file.file_name} (${date}) - ${status} - ${violations} violations, ${errors} errors`;
+      return `${index + 1}. ${file.file_name || 'Unknown file'} (${date}) - ${status} - ${violations} violations, ${errors} errors`;
     }).join('\n');
 
-    return `User's recent files:\n${filesList}`;
+    const context = `User's recent files:\n${filesList}`;
+    console.log('Generated file context:', context);
+    return context;
   } catch (error) {
+    console.error('Exception in getUserFilesContext:', error);
     return 'Error accessing user files.';
   }
 }
@@ -401,15 +420,43 @@ async function getUserFilesContext(userId) {
 // Helper to get or create chat history
 async function getChatHistory(sessionId, userId = null) {
   if (!chatSessions.has(sessionId)) {
+    // Get user's file context for system message
+    const filesContext = userId ? await getUserFilesContext(userId) : 'No files uploaded yet.';
+    
     const systemMessage = new SystemMessage(
-      "You are ConsumerAI, a professional legal assistant specializing in consumer rights and credit law under FDCPA and FCRA regulations. " +
-      "You help consumers understand their rights, dispute credit report errors, and navigate the dispute process. " +
-      "You provide accurate legal information about response timelines, dispute procedures, and consumer protections. " +
-      "IMPORTANT: You CAN access and analyze uploaded credit reports and documents from users. When users ask about accessing their uploads, " +
-      "tell them you can analyze their uploaded files and guide them to say 'analyze my report' or 'review my documents'. " +
-      "You have advanced document analysis capabilities using AI agents that can detect FCRA/FDCPA violations, errors, and provide actionable dispute steps. " +
-      "Be professional, accurate, and focused on helping users understand and exercise their legal rights. " +
-      "When users mention mail or certified mail, explain the legal requirements and help them track their dispute timeline."
+      "=== CONSUMERAI SYSTEM INSTRUCTIONS ===\n\n" +
+      "You are ConsumerAI, a professional legal assistant specializing in consumer rights and credit law under FDCPA and FCRA regulations.\n\n" +
+      
+      "=== DATABASE ACCESS (CRITICAL) ===\n" +
+      "• You have FULL ACCESS to Supabase database\n" +
+      "• Table: 'report_analyses' with columns: user_id (UUID), file_name, file_path, processed_at, analysis\n" +
+      "• You receive userId in every request via state.userId\n" +
+      "• Query example: supabase.from('report_analyses').select('*').eq('user_id', userId)\n" +
+      "• The system automatically fetches user files and provides them in context\n\n" +
+      
+      "=== CURRENT USER FILES ===\n" +
+      filesContext + "\n\n" +
+      
+      "=== WHEN USER ASKS ABOUT FILES ===\n" +
+      "• 'Can you get my reports?' → YES, reference specific files above by name and date\n" +
+      "• 'Do you have access?' → YES, show them their uploaded files\n" +
+      "• 'Can you see my credit report?' → YES, list their files with dates\n" +
+      "• If NO files: Ask 'Have you uploaded a credit report yet? I can analyze it for FCRA violations once you upload.'\n" +
+      "• If HAS files: 'Yes! I can see you uploaded [filename] on [date]. Would you like me to analyze it?'\n\n" +
+      
+      "=== YOUR CAPABILITIES ===\n" +
+      "• Analyze credit reports for FCRA/FDCPA violations\n" +
+      "• Detect errors, outdated items, identity theft indicators\n" +
+      "• Generate dispute letters\n" +
+      "• Calculate legal deadlines and timelines\n" +
+      "• Provide actionable steps for disputes\n\n" +
+      
+      "=== RESPONSE RULES ===\n" +
+      "• Always check user files context first\n" +
+      "• Reference specific files by name when they exist\n" +
+      "• Ask clarifying questions if user intent is unclear\n" +
+      "• Be professional, accurate, and helpful\n" +
+      "• Focus on actionable legal advice"
     );
     
     const history = [systemMessage];
@@ -443,15 +490,7 @@ async function getChatHistory(sessionId, userId = null) {
   return chatSessions.get(sessionId);
 }
 
-// Fast response for common questions - only basic greetings
-function getQuickResponse(message) {
-  const msg = message.toLowerCase();
-  
-  if (msg.includes('hello') || msg.includes('hi ') || msg.includes('hey')) {
-    return 'Hello! I\'m ConsumerAI, your professional legal assistant for consumer rights and credit disputes. I specialize in FDCPA and FCRA regulations. How can I help you with your consumer rights today?';
-  }
-  return null;
-}
+// Removed quick responses - AI should always have full context
 
 // Smart message processing with agent detection
 async function processMessage(message, sessionId, socketId = null, useAgents = null, userId = null) {
@@ -462,22 +501,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
                              msg.includes('usps') || msg.includes('delivery') || 
                              msg.includes('package') || msg.includes('mail status');
     
-    // Check for quick responses (but not for tracking requests)
-    if (!isTrackingRequest) {
-      const quickResponse = getQuickResponse(message);
-      if (quickResponse) {
-        return {
-          message: quickResponse,
-          sessionId,
-          messageId: `${Date.now()}-ai`,
-          created_at: new Date().toISOString(),
-          decisionTrace: {
-            usedAgent: 'quick',
-            steps: ['Quick response']
-          }
-        };
-      }
-    }
+    // No quick responses - always use AI with full context
     
     // Check cache for repeated questions (skip for agent messages)
     const needsAgents = useAgents === true || (useAgents !== false && detectAgentNeed(message));
@@ -517,16 +541,14 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     let reasoningSteps = [];
     let usedAgent = 'direct';
     
-    // Special case: Direct report analysis bypasses supervisor graph
+    // Special case: Direct report analysis ONLY for explicit analysis requests
     const isReportAnalysis = (message.toLowerCase().includes('analyze') && 
                              (message.toLowerCase().includes('report') || 
                               message.toLowerCase().includes('document') ||
                               message.toLowerCase().includes('credit'))) ||
-                            message.toLowerCase().includes('my report') ||
-                            message.toLowerCase().includes('uploaded') ||
-                            (message.toLowerCase().includes('check') && message.toLowerCase().includes('report'));
+                            (message.toLowerCase().includes('check') && message.toLowerCase().includes('report') && message.toLowerCase().includes('analyze'));
     
-    if (isReportAnalysis && supabase) {
+    if (isReportAnalysis && supabase && userId) {
       reasoningSteps.push('Direct report analysis activated');
       usedAgent = 'report';
 
@@ -626,58 +648,8 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
           }
         };
       } catch (reportError) {
-        console.log('Direct report analysis failed:', reportError.message);
-
-        // Emit error state
-        if (socketId && global.io) {
-          global.io.to(socketId).emit('agent-step', {
-            tool: 'report',
-            toolInput: message,
-            log: 'Credit report analysis failed',
-            timestamp: new Date().toISOString()
-          });
-          global.io.to(socketId).emit('agent-thinking-complete', {
-            response: 'I apologize, but I encountered an error analyzing your credit report. Please try rephrasing your question or contact support if the issue persists.',
-            sessionId: sessionId,
-            timestamp: new Date().toISOString()
-          });
-        }
-
-        // Save error response to database
-        if (supabase && userId) {
-          try {
-            await supabase.from('chat_history').insert([
-              {
-                session_id: sessionId,
-                user_id: userId,
-                role: 'user',
-                content: message,
-                created_at: new Date().toISOString()
-              },
-              {
-                session_id: sessionId,
-                user_id: userId,
-                role: 'assistant',
-                content: 'I apologize, but I encountered an error analyzing your credit report. Please try rephrasing your question or contact support if the issue persists.',
-                created_at: new Date().toISOString()
-              }
-            ]);
-          } catch (dbError) {
-            console.error('Failed to save error messages to database:', dbError);
-          }
-        }
-
-        return {
-          message: 'I apologize, but I encountered an error analyzing your credit report. Please try rephrasing your question or contact support if the issue persists.',
-          sessionId,
-          messageId: `${Date.now()}-ai`,
-          created_at: new Date().toISOString(),
-          usedModel: 'error',
-          decisionTrace: {
-            usedAgent: 'report-error',
-            steps: reasoningSteps
-          }
-        };
+        console.log('Direct report analysis failed, falling back to direct AI:', reportError.message);
+        // Fall through to direct AI response instead of returning error
       }
     } else if (needsAgents && graph) {
       reasoningSteps.push('Agent mode activated');
@@ -825,16 +797,32 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
         };
       }
     } else {
-      // Regular chat - direct Google AI
+      // Regular chat - direct Google AI with tools
       console.log('Taking direct AI path for message:', message);
       reasoningSteps.push('Direct AI response');
+
+      // Bind tools to AI if userId available
+      let modelWithTools = chatModel;
+      if (userId && supabase) {
+        const { createDatabaseTools } = require('./tools');
+        const dbTools = createDatabaseTools(supabase, userId);
+        if (dbTools.length > 0) {
+          modelWithTools = chatModel.bindTools(dbTools);
+          console.log('Bound database tools to AI model');
+        }
+      }
 
       // Emit thinking start for direct AI
       if (socketId && global.io) {
         global.io.to(socketId).emit('agent-thinking-start');
       }
 
-      var result = await processWithRateLimit(() => chatWithFallback(history));
+      var result = await processWithRateLimit(() => {
+        if (modelWithTools !== chatModel) {
+          return modelWithTools.invoke(history).then(r => ({ response: r, model: 'google-gemini-tools' }));
+        }
+        return chatWithFallback(history);
+      });
       var aiResponse = result.response;
       var usedModel = result.model;
 
@@ -874,7 +862,6 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       // Cache the response for direct AI
       setCachedResponse(message, aiResponse.content);
 
-      console.log('Direct AI path returning early');
       return {
         message: stripMarkdown(aiResponse.content),
         sessionId,
@@ -1263,13 +1250,18 @@ module.exports = async function handler(req, res) {
     if (path === 'user/files') {
       if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
       const userId = req.headers['user-id'] || req.query.userId;
+      
+      console.log('User files request - userId:', userId, 'supabase available:', !!supabase);
+      
       if (!userId) return res.status(400).json({ error: 'Missing userId' });
 
       if (!supabase) {
+        console.log('No supabase connection, returning empty files');
         return res.status(200).json({ files: [] });
       }
 
       try {
+        console.log('Querying report_analyses for user:', userId);
         const { data, error } = await supabase
           .from('report_analyses')
           .select('file_name, file_path, processed_at, analysis')
@@ -1277,21 +1269,30 @@ module.exports = async function handler(req, res) {
           .order('processed_at', { ascending: false })
           .limit(3);
 
+        console.log('Query result - data:', data, 'error:', error);
+
         if (error) {
+          console.error('Database error:', error);
           return res.status(500).json({ error: error.message });
         }
 
-        const files = (data || []).map(file => ({
-          name: file.file_name,
-          path: file.file_path,
-          date: file.processed_at,
-          status: file.analysis ? 'analyzed' : 'processing',
-          violations: file.analysis?.violations?.length || 0,
-          errors: file.analysis?.errors?.length || 0
-        }));
+        const files = (data || []).map(file => {
+          const processedDate = file.processed_at ? new Date(file.processed_at) : new Date();
+          return {
+            name: file.file_name || 'Unknown file',
+            path: file.file_path,
+            date: processedDate.toISOString(),
+            dateFormatted: processedDate.toLocaleDateString(),
+            status: file.analysis ? 'analyzed' : 'processing',
+            violations: file.analysis?.violations?.length || 0,
+            errors: file.analysis?.errors?.length || 0
+          };
+        });
 
+        console.log('Returning files:', files);
         return res.status(200).json({ files });
       } catch (err) {
+        console.error('User files endpoint error:', err);
         return res.status(500).json({ error: err.message });
       }
     }

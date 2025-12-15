@@ -52,6 +52,57 @@ const creditDisputeTool = new DynamicTool({
   },
 });
 
+// Database access tools for AI agents
+function createDatabaseTools(supabase, userId) {
+  if (!supabase || !userId) return [];
+
+  const getUserFilesTool = new DynamicTool({
+    name: 'get_user_files',
+    description: 'Query database to get user uploaded credit report files with names, dates, and analysis status',
+    func: async () => {
+      const { data, error } = await supabase
+        .from('report_analyses')
+        .select('file_name, file_path, processed_at, analysis')
+        .eq('user_id', userId)
+        .order('processed_at', { ascending: false })
+        .limit(10);
+
+      if (error) return `Error: ${error.message}`;
+      if (!data || data.length === 0) return 'No files found. User has not uploaded any credit reports yet.';
+
+      return data.map((f, i) => {
+        const v = f.analysis?.violations?.length || 0;
+        const e = f.analysis?.errors?.length || 0;
+        const s = f.analysis ? 'analyzed' : 'processing';
+        const d = new Date(f.processed_at).toLocaleDateString();
+        return `${i + 1}. ${f.file_name} (${d}) - ${s} - ${v} violations, ${e} errors`;
+      }).join('\n');
+    }
+  });
+
+  const getFileAnalysisTool = new DynamicTool({
+    name: 'get_file_analysis',
+    description: 'Get detailed analysis of specific credit report file by name',
+    func: async (fileName) => {
+      const { data, error } = await supabase
+        .from('report_analyses')
+        .select('*')
+        .eq('user_id', userId)
+        .ilike('file_name', `%${fileName}%`)
+        .order('processed_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (error) return `File "${fileName}" not found.`;
+      if (!data.analysis) return `File "${data.file_name}" still processing.`;
+
+      return data.analysis.detailed_analysis || data.analysis.summary || JSON.stringify(data.analysis, null, 2);
+    }
+  });
+
+  return [getUserFilesTool, getFileAnalysisTool];
+}
+
 const tools = [tavilyTool, legalCaseTool, consumerRightsTool, creditDisputeTool];
 
-module.exports = { tools, tavilyTool };
+module.exports = { tools, tavilyTool, createDatabaseTools };

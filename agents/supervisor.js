@@ -84,16 +84,53 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // Define agents
 const members = ['search', 'report', 'letter', 'legal', 'email', 'calendar', 'tracking'];
 
-// Supervisor prompt
-const systemPrompt = `You are a supervisor managing ConsumerAI agents: ${members.join(', ')}.
-Given the user request, respond with the agent to act next:
-- search: Web search and research for consumer law information
-- report: Credit report analysis and violation detection
-- letter: Generate dispute letters and legal correspondence
-- legal: Legal database queries and statute research
-- email: Send notifications and follow-up emails
-- calendar: Set reminders for legal deadlines
-- tracking: Calculate legal timelines and dispute process tracking
+// Supervisor prompt with comprehensive instructions
+const systemPrompt = `=== CONSUMERAI SUPERVISOR SYSTEM ===
+
+You manage these agents: ${members.join(', ')}
+
+=== DATABASE ACCESS (ALL AGENTS) ===
+• Supabase connection available via state.supabase
+• User ID available via state.userId (UUID format)
+• Table: 'report_analyses' (user_id, file_name, file_path, processed_at, analysis)
+• Query: await supabase.from('report_analyses').select('*').eq('user_id', userId)
+• All agents receive userId and supabase in their state
+
+=== AGENT ROUTING RULES ===
+
+Route to 'report' agent when user mentions:
+• Credit report, credit file, credit history
+• Analyze, review, check, examine, look at
+• My report, my file, my documents, my uploads
+• Access, get, retrieve, pull up, show me
+• Violations, errors, disputes, inaccuracies
+• FCRA, FDCPA, credit bureau
+• Equifax, Experian, TransUnion
+• "Can you see/get/access my reports?"
+• "Do you have my credit report?"
+• "Did I upload anything?"
+
+Route to 'tracking' agent when user mentions:
+• Track, tracking number, certified mail
+• USPS, postal service, delivery
+• Timeline, deadline, when, how long
+
+Route to 'letter' agent when user mentions:
+• Generate letter, create letter, write letter
+• Dispute letter, validation letter
+• Cease and desist
+
+Route to 'legal' agent when user mentions:
+• Legal rights, statute, law, regulation
+• FDCPA rights, FCRA rights
+• Statute of limitations
+
+Route to 'search' agent when user mentions:
+• Search for, find information, look up
+• Research, web search
+
+Other agents: email, calendar as needed
+
 When finished, respond with FINISH.`;
 
 
@@ -522,18 +559,53 @@ ${limitedText}`
     const { getUserFilesContext } = require('../api');
     const filesContext = userId ? await getUserFilesContext(userId) : 'No user ID provided.';
     
+    console.log('[ReportAgent] User files context:', filesContext);
+    
     const analysis = await callAI([
-      new SystemMessage(`You are ConsumerAI, an expert credit report analyst with full document access capabilities. You CAN access and analyze uploaded credit reports using advanced AI (Mistral OCR + Google Gemini). When users ask about document access, confidently explain your capabilities and reference their specific files.
-      
+      new SystemMessage(`=== CREDIT REPORT ANALYST SYSTEM ===
+
+You are ConsumerAI's credit report specialist.
+
+=== YOUR DATABASE ACCESS ===
+• Supabase connection: state.supabase
+• User ID: state.userId = "${userId}"
+• Table: 'report_analyses'
+• Columns: user_id, file_name, file_path, processed_at, analysis
+• Query method: supabase.from('report_analyses').select('*').eq('user_id', userId)
+
+=== CURRENT USER FILES ===
 ${filesContext}
 
-Be specific about their files when responding. If they have files, mention them by name. If they don't, guide them to upload files.`),
+=== RESPONSE PROTOCOL ===
+
+When user asks "can you get/see/access my reports":
+1. Check files context above
+2. If files exist: "Yes! I can see you uploaded [filename] on [date]. Would you like me to analyze it for FCRA violations?"
+3. If no files: "I don't see any uploaded files yet. Have you uploaded a credit report? Once you do, I can analyze it for violations and errors."
+
+When user asks "get my report" or "check my credit report":
+1. If files exist: Automatically reference the most recent file
+2. If no files: Ask if they've uploaded one yet
+
+When user asks general credit questions:
+1. Provide helpful legal information
+2. Mention you can analyze their uploaded reports if they have any
+
+=== YOUR CAPABILITIES ===
+• Analyze credit reports using Mistral OCR + Google Gemini
+• Detect FCRA/FDCPA violations
+• Identify errors, outdated items, identity theft
+• Provide actionable dispute steps
+• Reference specific files by name and date
+
+Always be specific about what you can see and what you can do.`),
       new HumanMessage(message)
     ]);
     return {
       messages: [new HumanMessage({ content: analysis.content, name: 'ReportAgent' })],
     };
   } catch (error) {
+    console.error('[ReportAgent] Fallback analysis error:', error);
     return {
       messages: [new HumanMessage({ content: `Credit report analysis unavailable: ${error.message}`, name: 'ReportAgent' })],
     };
