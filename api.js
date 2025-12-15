@@ -497,8 +497,8 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     
     // No quick responses - always use AI with full context
     
-    // Check cache for repeated questions (skip for agent messages)
-    const needsAgents = useAgents === true || (useAgents !== false && detectAgentNeed(message));
+    // Always use supervisor for non-greeting messages
+    const needsAgents = useAgents === true || (useAgents !== false && !msg.match(/^(hi|hello|hey)$/i));
     const cachedResponse = !needsAgents ? getCachedResponse(message) : null;
     if (cachedResponse) {
       // Emit Socket.IO events for cached response
@@ -645,8 +645,10 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
         console.log('Direct report analysis failed, falling back to direct AI:', reportError.message);
         // Fall through to direct AI response instead of returning error
       }
-    } else if (needsAgents && graph) {
-      reasoningSteps.push('Agent mode activated');
+    }
+    
+    if (needsAgents && graph) {
+      reasoningSteps.push('Supervisor agent analyzing');
       usedAgent = 'supervisor';
       
       // Emit agent selection
@@ -791,44 +793,18 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
         };
       }
     } else {
-      // Regular chat - direct Google AI with tools
+      // Regular chat - direct Google AI
       console.log('Taking direct AI path for message:', message);
       reasoningSteps.push('Direct AI response');
 
-      // Bind tools to AI if userId available
-      let modelWithTools = chatModel;
-      if (userId && supabase) {
-        const { createDatabaseTools } = require('./tools');
-        const dbTools = createDatabaseTools(supabase, userId);
-        if (dbTools.length > 0) {
-          modelWithTools = chatModel.bindTools(dbTools);
-          console.log('Bound database tools to AI model');
-        }
-      }
-
-      // Emit thinking start for direct AI
+      // Emit thinking start
       if (socketId && global.io) {
         global.io.to(socketId).emit('agent-thinking-start');
       }
 
-      var result = await processWithRateLimit(() => {
-        if (modelWithTools !== chatModel) {
-          return modelWithTools.invoke(history).then(r => ({ response: r, model: 'google-gemini-tools' }));
-        }
-        return chatWithFallback(history);
-      });
+      var result = await processWithRateLimit(() => chatWithFallback(history));
       var aiResponse = result.response;
       var usedModel = result.model;
-      
-      // Handle tool calls - extract text content
-      if (aiResponse.content && Array.isArray(aiResponse.content)) {
-        const textContent = aiResponse.content.find(c => c.type === 'text');
-        if (textContent) {
-          aiResponse = { content: textContent.text };
-        } else {
-          aiResponse = { content: 'Processing your request...' };
-        }
-      }
 
       // Emit thinking complete for direct AI
       if (socketId && global.io) {
@@ -1430,13 +1406,6 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // Fallback for unhandled paths
-    else {
-      return res.status(404).json({
-        error: { message: `API endpoint /${path} not found`, code: 'NOT_FOUND' }
-      });
-    }
-
     // Human approval endpoint for sensitive operations
     if (path === 'human-approve' && req.method === 'POST') {
       try {
@@ -1648,15 +1617,6 @@ module.exports = async function handler(req, res) {
           userId
         });
 
-        // Notify user that upload was registered successfully
-        global.emitToUser && global.emitToUser(userId, 'upload-registered', {
-          userId,
-          filePath,
-          fileName,
-          message: 'File uploaded successfully and queued for analysis',
-          timestamp: new Date().toISOString()
-        });
-
       } catch (error) {
         console.error('Upload processing error:', error);
         return res.status(500).json({
@@ -1708,6 +1668,20 @@ module.exports = async function handler(req, res) {
         return res.status(500).json({ error: err.message });
       }
     }
+
+    // Fallback for unhandled paths
+    return res.status(404).json({
+      error: { message: `API endpoint /${path} not found`, code: 'NOT_FOUND' }
+    });
+  } catch (error) {
+    console.error(`[API Router] Unexpected error:`, error);
+    return res.status(500).json({
+      error: {
+        message: 'Internal server error',
+        details: error instanceof Error ? error.message : String(error)
+      }
+    });
+  }
 };
 
 // Export helper functions for use by agents

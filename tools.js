@@ -105,4 +105,4 @@ function createDatabaseTools(supabase, userId) {
 
 const tools = [tavilyTool, legalCaseTool, consumerRightsTool, creditDisputeTool];
 
-module.exports = { tools, tavilyTool, createDatabaseTools };
+module.exports = { tools, tavilyTool };
