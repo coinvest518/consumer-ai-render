@@ -22,8 +22,13 @@ try {
 
 // Initialize Supabase client (optional)
 let supabase = null;
+console.log('SUPABASE_URL value:', process.env.SUPABASE_URL);
+console.log('SUPABASE_SERVICE_ROLE_KEY value:', process.env.SUPABASE_SERVICE_ROLE_KEY ? 'Present' : 'Not present');
+console.log('SUPABASE_URL present:', !!process.env.SUPABASE_URL);
+console.log('SUPABASE_SERVICE_ROLE_KEY present:', !!process.env.SUPABASE_SERVICE_ROLE_KEY);
 if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   try {
+    console.log('Initializing Supabase client...');
     supabase = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_SERVICE_ROLE_KEY,
@@ -34,6 +39,7 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
         }
       }
     );
+    console.log('Supabase client initialized successfully');
   } catch (error) {
     console.warn('Supabase client initialization failed:', error.message);
   }
@@ -74,7 +80,7 @@ if (googleApiKey) {
     chatModel = null;
   }
 } else {
-  console.warn('GOOGLE_API_KEY or GOOGLE_AI_API_KEY not found in environment variables');
+  console.warn('GOOGLE_API_KEY not found in environment variables');
 }
 
 // No backup model - Using Gemini 2.5 Flash as primary
@@ -142,7 +148,7 @@ async function processQueue() {
   try {
     // Check if Google AI model is available
     if (!chatModel) {
-      throw new Error('Google AI (Gemini) model not configured - Please ensure you have:\n1. Valid GOOGLE_API_KEY or GOOGLE_AI_API_KEY environment variable\n2. Google AI API enabled in your Google Cloud project\n3. Proper API key with Gemini API access');
+      throw new Error('Google AI (Gemini) model not configured - Please ensure you have:\n1. Valid GOOGLE_API_KEY environment variable\n2. Google AI API enabled in your Google Cloud project\n3. Proper API key with Gemini API access');
     }
     const result = await fn();
     resolve(result);
@@ -278,8 +284,9 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       }
     }
     
-    // Check cache for repeated questions
-    const cachedResponse = getCachedResponse(message);
+    // Check cache for repeated questions (skip for agent messages)
+    const needsAgents = useAgents === true || (useAgents !== false && detectAgentNeed(message));
+    const cachedResponse = !needsAgents ? getCachedResponse(message) : null;
     if (cachedResponse) {
       return {
         message: cachedResponse,
@@ -300,10 +307,35 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     let reasoningSteps = [];
     let usedAgent = 'direct';
     
-    // Determine if agents are needed - prefer direct AI
-    const needsAgents = useAgents === true || (useAgents !== false && detectAgentNeed(message));
+    // Special case: Direct report analysis bypasses supervisor graph
+    const isReportAnalysis = message.toLowerCase().includes('analyze') && 
+                            (message.toLowerCase().includes('report') || message.toLowerCase().includes('document'));
     
-    if (needsAgents && graph) {
+    if (isReportAnalysis && supabase) {
+      reasoningSteps.push('Direct report analysis activated');
+      usedAgent = 'report';
+      
+      try {
+        // Import reportAgent directly
+        const { reportAgent } = require('./agents/supervisor');
+        
+        // Call reportAgent with proper state
+        const result = await reportAgent({
+          messages: [{ content: message }],
+          userId: userId,
+          supabase: supabase
+        });
+        
+        const lastMessage = result.messages ? result.messages[result.messages.length - 1] : result;
+        var aiResponse = { content: lastMessage.content || lastMessage.message || 'Analysis completed' };
+        
+        reasoningSteps.push('Report analysis completed successfully');
+      } catch (reportError) {
+        console.log('Direct report analysis failed:', reportError.message);
+        reasoningSteps.push('Report analysis failed, using direct AI response');
+        var aiResponse = await processWithRateLimit(() => chatModel.invoke(history));
+      }
+    } else if (needsAgents && graph) {
       reasoningSteps.push('Agent mode activated');
       usedAgent = 'supervisor';
       
@@ -333,7 +365,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
             supabase: supabase
           }),
           new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Agent timeout')), 10000)
+            setTimeout(() => reject(new Error('Agent timeout')), 30000) // Increased to 30 seconds
           )
         ]);
         
@@ -669,7 +701,7 @@ module.exports = async function handler(req, res) {
         timestamp: new Date().toISOString(),
         env: {
           hasAnthropic: !!process.env.ANTHROPIC_API_KEY,
-          hasGoogleAI: !!(process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY),
+          hasGoogleAI: !!process.env.GOOGLE_API_KEY,
           hasTavily: !!process.env.TAVILY_API_KEY
         }
       });
@@ -993,7 +1025,7 @@ module.exports = async function handler(req, res) {
           });
         }
 
-        // Verify file exists in storage - check multiple buckets
+        // Verify file exists in storage - check multiple buckets with correct paths
         const buckets = ['users-file-storage', 'credit-reports', 'uploads', 'documents'];
         let fileExists = false;
         let fileInfo = null;
@@ -1001,9 +1033,16 @@ module.exports = async function handler(req, res) {
 
         for (const bucket of buckets) {
           try {
+            let listPath = userId;
+            
+            // For users-file-storage bucket, files are stored under credit-reports/userId/
+            if (bucket === 'users-file-storage') {
+              listPath = `credit-reports/${userId}`;
+            }
+            
             const { data: fileData, error: fileError } = await supabase.storage
               .from(bucket)
-              .list(userId, { limit: 1000 });
+              .list(listPath, { limit: 1000 });
 
             if (!fileError && fileData) {
               const foundFile = fileData.find(file => file.name === fileName);

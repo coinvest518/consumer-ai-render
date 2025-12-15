@@ -4,6 +4,18 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const http = require('http');
 const { Server } = require('socket.io');
+
+// Load environment variables FIRST
+dotenv.config();
+
+// Log environment variable status (for debugging)
+console.log('Environment variables loaded:');
+console.log('- GOOGLE_API_KEY:', process.env.GOOGLE_API_KEY ? 'Set' : 'Not set');
+console.log('- GOOGLE_API_KEY value starts with:', process.env.GOOGLE_API_KEY?.substring(0, 10) + '...');
+console.log('- SUPABASE_URL:', process.env.SUPABASE_URL ? 'Set' : 'Not set');
+console.log('- TAVILY_API_KEY:', process.env.TAVILY_API_KEY ? 'Set' : 'Not set');
+console.log('- LANGSMITH_TRACING:', process.env.LANGSMITH_TRACING);
+
 const apiHandler = require('./api');
 
 // Simple rate limiter implementation (fallback)
@@ -35,17 +47,6 @@ const apiLimiter = (req, res, next) => {
   data.count++;
   next();
 };
-
-// Load environment variables
-dotenv.config();
-
-// Log environment variable status (for debugging)
-console.log('Environment variables loaded:');
-console.log('- GOOGLE_API_KEY:', process.env.GOOGLE_API_KEY ? 'Set' : 'Not set');
-console.log('- GOOGLE_AI_API_KEY:', process.env.GOOGLE_AI_API_KEY ? 'Set' : 'Not set');
-console.log('- SUPABASE_URL:', process.env.SUPABASE_URL ? 'Set' : 'Not set');
-console.log('- TAVILY_API_KEY:', process.env.TAVILY_API_KEY ? 'Set' : 'Not set');
-console.log('- LANGSMITH_TRACING:', process.env.LANGSMITH_TRACING);
 
 
 const app = express();

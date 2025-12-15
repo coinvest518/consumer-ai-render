@@ -56,14 +56,24 @@ if ((process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY) && ChatGoogleG
 // AI call with Google model
 async function callAI(messages) {
   try {
+    console.log('[Supervisor] callAI called, model available:', !!model);
     if (!model) {
+      console.log('[Supervisor] Model not available, GOOGLE_API_KEY present:', !!process.env.GOOGLE_API_KEY);
       return { content: 'AI service is not configured. Please check your GOOGLE_API_KEY.' };
     }
     
     await delay(100); // Minimal delay for rate limiting
-    return await model.invoke(messages);
+    console.log('[Supervisor] Calling AI model...');
+    const result = await Promise.race([
+      model.invoke(messages),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('AI timeout')), 20000) // 20 second timeout for AI calls
+      )
+    ]);
+    console.log('[Supervisor] AI call successful');
+    return result;
   } catch (error) {
-    console.error('Google AI request failed:', error.message);
+    console.error('[Supervisor] AI request failed:', error.message);
     return { content: `AI service unavailable: ${error.message}` };
   }
 }
@@ -98,9 +108,13 @@ const prompt = ChatPromptTemplate.fromMessages([
 async function supervisor(state) {
   try {
     const message = state.messages[state.messages.length - 1].content.toLowerCase();
+    console.log('[Supervisor] Routing message:', message);
+    console.log('[Supervisor] userId:', state.userId);
+    console.log('[Supervisor] supabase available:', !!state.supabase);
     
     // Priority routing for specific requests
     if (message.includes('track') || message.includes('certified mail') || message.includes('usps')) {
+      console.log('[Supervisor] Routing to tracking');
       return { next: 'tracking' };
     }
     // High priority for document analysis
@@ -108,6 +122,7 @@ async function supervisor(state) {
         message.includes('credit report') || message.includes('document') || message.includes('uploaded') ||
         message.includes('file') || message.includes('violations') || message.includes('errors') ||
         message.includes('fcra') || message.includes('fdcpa') || message.includes('dispute')) {
+      console.log('[Supervisor] Routing to report agent');
       return { next: 'report' };
     }
     if (message.includes('letter') || message.includes('dispute')) {
@@ -215,8 +230,13 @@ async function reportAgent(state) {
   
   // Auto-analyze most recent file if user asks about reports/documents
   const msg = message.toLowerCase();
+  console.log(`[ReportAgent] Checking message: "${msg}" for analysis keywords`);
+  console.log(`[ReportAgent] userId: ${userId}, supabase available: ${!!supabase}`);
+  
   if ((msg.includes('analyze') || msg.includes('review') || msg.includes('my report') || 
        msg.includes('credit report') || msg.includes('document')) && userId && supabase) {
+    
+    console.log(`[ReportAgent] Analysis keywords found, checking for recent analyses...`);
     
     try {
       // FIRST: Check if we already have an analysis for the most recent file
@@ -233,7 +253,10 @@ async function reportAgent(state) {
         const analysisAge = Date.now() - new Date(latestAnalysis.processed_at).getTime();
         const isRecent = analysisAge < (60 * 60 * 1000); // 1 hour
         
+        console.log(`[ReportAgent] Found existing analysis, age: ${analysisAge}ms, isRecent: ${isRecent}`);
+        
         if (isRecent) {
+          console.log(`[ReportAgent] Returning cached analysis`);
           return {
             messages: [new HumanMessage({ 
               content: `📄 **Recent Analysis Available**\n\n${latestAnalysis.analysis.detailed_analysis || latestAnalysis.analysis.summary}\n\n---\n*Using cached analysis from ${new Date(latestAnalysis.processed_at).toLocaleString()}*`, 
@@ -244,7 +267,8 @@ async function reportAgent(state) {
       }
       
       // SECOND: If no recent analysis, get the most recent uploaded file
-      // Try multiple buckets like reportProcessor does
+      // Try multiple buckets like reportProcessor does, but prioritize users-file-storage with credit-reports/ prefix
+      console.log(`[ReportAgent] No recent analysis found, searching for uploaded files...`);
       const buckets = ['users-file-storage', 'credit-reports', 'uploads', 'documents'];
       let latestFile = null;
       let latestBucket = null;
@@ -252,28 +276,50 @@ async function reportAgent(state) {
       
       for (const bucket of buckets) {
         try {
+          let listPath = userId;
+          
+          // For users-file-storage bucket, files are stored under credit-reports/userId/
+          if (bucket === 'users-file-storage') {
+            listPath = `credit-reports/${userId}`;
+          }
+          
+          console.log(`[ReportAgent] Checking bucket: ${bucket}, path: ${listPath}`);
+          
           const { data: files, error: filesError } = await supabase.storage
             .from(bucket)
-            .list(userId, { limit: 1, sortBy: { column: 'created_at', order: 'desc' } });
+            .list(listPath, { limit: 1, sortBy: { column: 'created_at', order: 'desc' } });
           
           if (!filesError && files && files.length > 0) {
             const file = files[0];
             const fileTimestamp = new Date(file.created_at).getTime();
+            
+            console.log(`[ReportAgent] Found file in ${bucket}: ${file.name}, timestamp: ${fileTimestamp}`);
             
             // Check if this is the most recent file across all buckets
             if (fileTimestamp > latestTimestamp) {
               latestFile = file;
               latestBucket = bucket;
               latestTimestamp = fileTimestamp;
+              console.log(`[ReportAgent] This is now the latest file`);
             }
+          } else {
+            console.log(`[ReportAgent] No files found in ${bucket}/${listPath}, error: ${filesError?.message}`);
           }
         } catch (bucketError) {
-          console.log(`Skipping bucket ${bucket}:`, bucketError.message);
+          console.log(`[ReportAgent] Skipping bucket ${bucket}:`, bucketError.message);
         }
       }
       
+      console.log(`[ReportAgent] Bucket search complete. latestFile: ${latestFile?.name || 'null'}, latestBucket: ${latestBucket || 'null'}`);
+      
       if (latestFile) {
-        const filePath = `${userId}/${latestFile.name}`;
+        // Construct the full file path based on bucket structure
+        let filePath;
+        if (latestBucket === 'users-file-storage') {
+          filePath = `credit-reports/${userId}/${latestFile.name}`;
+        } else {
+          filePath = `${userId}/${latestFile.name}`;
+        }
         
         // Process the document
         const { processCreditReport, extractText, downloadFromStorage } = require('../reportProcessor');
@@ -297,26 +343,49 @@ async function reportAgent(state) {
         }
         
         const extractedText = await extractText(buffer, latestFile.name);
+        console.log(`[ReportAgent] Extracted text length: ${extractedText.length} characters`);
         
-        // Enhanced analysis with highlighting
-        const detailedAnalysis = await callAI([
-          new SystemMessage(`You are an expert credit report analyst. Analyze the document and provide:
+        // OPTIMIZED: Use text extraction but limit to reasonable size for API quota
+        console.log(`[ReportAgent] Using optimized text-based analysis to avoid quota limits`);
+        
+        // Limit text to first 50,000 characters to stay within API limits
+        const limitedText = extractedText.length > 50000 ? 
+          extractedText.substring(0, 50000) + '\n\n[Text truncated for analysis...]' : 
+          extractedText;
+        
+        const { GoogleGenerativeAI } = require('@google/generative-ai');
+        const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY);
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        
+        // Send limited text instead of full PDF to avoid quota issues
+        const detailedAnalysis = await model.generateContent([
+          `You are an expert credit report analyst. Analyze this credit report text and provide:
 
-1. **HIGHLIGHTED VIOLATIONS** - Mark specific violations with 🚨
-2. **OUTLINED ERRORS** - List errors with ⚠️ 
-3. **ACTIONABLE ITEMS** - Steps to take with ✅
-4. **EVIDENCE QUOTES** - Exact text from report with quotation marks
+1. **HIGHLIGHTED VIOLATIONS** - Mark specific FCRA/FDCPA violations with 🚨
+2. **OUTLINED ERRORS** - List errors and inaccuracies with ⚠️ 
+3. **ACTIONABLE ITEMS** - Steps the consumer should take with ✅
+4. **EVIDENCE QUOTES** - Exact text from the report with quotation marks
 
-Format your response with clear sections and highlighting.`),
-          new HumanMessage(`Analyze this credit report for FCRA/FDCPA violations and errors:\n\n${extractedText}`)
+Focus on:
+- Incorrect information
+- Outdated negative items (older than 7 years)
+- Identity theft indicators
+- FCRA compliance issues
+- Credit scoring factors
+
+Be specific and reference exact content from the document. Keep your analysis comprehensive but concise.
+
+CREDIT REPORT TEXT:
+${limitedText}`
         ]);
         
         // Store analysis in database
+        const analysisText = detailedAnalysis.response.text();
         const analysisResult = {
-          summary: detailedAnalysis.content.substring(0, 200) + '...',
-          detailed_analysis: detailedAnalysis.content,
-          violations_found: detailedAnalysis.content.includes('🚨'),
-          errors_found: detailedAnalysis.content.includes('⚠️'),
+          summary: analysisText.substring(0, 200) + '...',
+          detailed_analysis: analysisText,
+          violations_found: analysisText.includes('🚨'),
+          errors_found: analysisText.includes('⚠️'),
           file_name: latestFile.name,
           extracted_text: extractedText.substring(0, 1000) + '...'
         };
@@ -331,15 +400,17 @@ Format your response with clear sections and highlighting.`),
         
         return {
           messages: [new HumanMessage({ 
-            content: `📄 **Analysis of ${latestFile.name}**\n\n${detailedAnalysis.content}\n\n---\n*Analysis saved to your account for future reference.*`, 
+            content: `📄 **Analysis of ${latestFile.name}**\n\n${analysisText}\n\n---\n*Analysis saved to your account for future reference.*`, 
             name: 'ReportAgent' 
           })],
         };
       }
     } catch (error) {
-      console.error('Auto-analysis error:', error);
+      console.error('[ReportAgent] Auto-analysis error:', error);
     }
   }
+  
+  console.log(`[ReportAgent] Auto-analysis completed, no file processed. Moving to other checks...`);
   
   // Check if message contains a file path
   const filePathMatch = message.match(/file_path:\s*(.+)/i);
@@ -412,6 +483,11 @@ Format your response with clear sections and highlighting.`),
         .list(userId, { limit: 10, sortBy: { column: 'created_at', order: 'desc' } });
       
       if (files && files.length > 0) {
+        console.log(`[ReportAgent] Document listing: Found ${files.length} files in credit-reports bucket for user ${userId}`);
+        files.forEach((file, idx) => {
+          console.log(`[ReportAgent] File ${idx + 1}: ${file.name} (${file.created_at})`);
+        });
+        
         let response = `📁 **Your uploaded documents:**\n\n`;
         files.forEach((file, idx) => {
           response += `${idx + 1}. 📄 ${file.name} (${new Date(file.created_at).toLocaleDateString()})\n`;
@@ -422,6 +498,7 @@ Format your response with clear sections and highlighting.`),
           messages: [new HumanMessage({ content: response, name: 'ReportAgent' })],
         };
       } else {
+        console.log(`[ReportAgent] Document listing: No files found in credit-reports bucket for user ${userId}`);
         return {
           messages: [new HumanMessage({ 
             content: `📁 No documents found. Upload a credit report or document for analysis.`, 
@@ -943,4 +1020,4 @@ const graph = workflow.compile({
   recursionLimit: 3 // Minimal steps to prevent loops
 });
 
-module.exports = { graph, AgentState };
+module.exports = { graph, AgentState, reportAgent };

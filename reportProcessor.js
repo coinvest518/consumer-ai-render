@@ -7,6 +7,7 @@ const axios = require('axios');
 const pdfParse = require('pdf-parse');
 const { createWorker } = require('tesseract.js');
 const pdfPoppler = require('pdf-poppler');
+const { Mistral } = require('@mistralai/mistralai');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -14,7 +15,12 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Initialize Google AI model
+// Initialize Mistral client for OCR
+const mistral = new Mistral({
+  apiKey: process.env.MISTRAL_API_KEY,
+});
+
+// Initialize Google AI model (only for final analysis)
 const openaiModel = new ChatGoogleGenerativeAI({
   apiKey: process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY,
   model: 'gemini-2.5-flash',
@@ -55,29 +61,56 @@ async function downloadFromStorage(filePath) {
 }
 
 /**
- * Extract text from PDF using pdf-parse
+ * Extract text from PDF using Mistral OCR
  * @param {Buffer} buffer - PDF buffer
  * @returns {Promise<string>} - Extracted text
  */
 async function extractTextFromPDF(buffer) {
   try {
-    console.log('Extracting text from PDF, buffer size:', buffer.length);
-    const data = await pdfParse(buffer);
-    console.log('PDF info:', {
-      pages: data.numpages,
-      textLength: data.text.length
+    console.log('🔍 Extracting text from PDF using Mistral OCR, buffer size:', buffer.length);
+
+    // Convert buffer to base64 data URL for Mistral
+    const base64Data = buffer.toString('base64');
+    const dataUrl = `data:application/pdf;base64,${base64Data}`;
+
+    console.log('📤 Sending PDF to Mistral OCR...');
+
+    // Use Mistral OCR API
+    const ocrResponse = await mistral.ocr.process({
+      model: "mistral-ocr-latest",
+      document: {
+        type: "document_url",
+        document_url: dataUrl
+      }
     });
-    
-    // If no text extracted, it might be a scanned PDF
-    if (!data.text || data.text.trim().length < 10) {
-      console.log('No text extracted from PDF - might be scanned/image-based');
-      throw new Error('PDF appears to be image-based or contains no extractable text');
+
+    console.log('✅ Mistral OCR completed, pages processed:', ocrResponse.pages?.length || 0);
+
+    // Combine all pages' markdown content
+    const extractedText = ocrResponse.pages
+      .map(page => page.markdown)
+      .join('\n\n');
+
+    console.log('📝 Extracted text length:', extractedText.length);
+
+    if (!extractedText || extractedText.trim().length < 10) {
+      throw new Error('Mistral OCR returned insufficient text from PDF');
     }
-    
-    return data.text;
+
+    return extractedText;
+
   } catch (error) {
-    console.error('Error extracting text from PDF:', error);
-    throw error;
+    console.error('❌ Mistral OCR error:', error);
+    // Fallback to original pdf-parse method
+    console.log('🔄 Falling back to pdf-parse...');
+    try {
+      const data = await pdfParse(buffer);
+      console.log('📄 PDF-parse fallback: pages:', data.numpages, 'text length:', data.text.length);
+      return data.text;
+    } catch (fallbackError) {
+      console.error('❌ Fallback also failed:', fallbackError);
+      throw new Error(`OCR failed: ${error.message}`);
+    }
   }
 }
 
