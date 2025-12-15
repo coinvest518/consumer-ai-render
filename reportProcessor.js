@@ -1,5 +1,4 @@
 const { createClient } = require('@supabase/supabase-js');
-const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
 const { HumanMessage, SystemMessage } = require('@langchain/core/messages');
 const fs = require('fs');
 const path = require('path');
@@ -18,12 +17,7 @@ const mistral = new Mistral({
   apiKey: process.env.MISTRAL_API_KEY,
 });
 
-// Initialize Google AI model (only for final analysis)
-const openaiModel = new ChatGoogleGenerativeAI({
-  apiKey: process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY,
-  model: 'gemini-2.5-flash',
-  temperature: 0.1, // Low temperature for analysis
-});
+const { chatWithFallback } = require('./aiUtils');
 
 /**
  * Download file from Supabase storage
@@ -209,13 +203,13 @@ Analyze the credit report text and return ONLY a JSON object with this EXACT str
 IMPORTANT: Return ONLY the JSON object, no other text or formatting.`;
 
   try {
-    const response = await openaiModel.invoke([
+    const { response } = await chatWithFallback([
       new SystemMessage(systemPrompt),
       new HumanMessage(`Analyze this credit report text:\n\n${text}`)
     ]);
 
     // Parse the JSON response
-    const analysisText = response.content.trim();
+    const analysisText = (response && (response.content || response)) ? String(response.content || response).trim() : '';
     console.log('AI Response:', analysisText.substring(0, 200) + '...');
     
     // Remove markdown code blocks if present

@@ -51,41 +51,34 @@ async function testDatabaseTools() {
 
   // Test with AI
   console.log('\n3. Testing AI with database tools...');
-  const model = new ChatGoogleGenerativeAI({
-    apiKey: process.env.GOOGLE_API_KEY,
-    model: 'gemini-2.5-flash',
-    temperature: 0.7
-  });
-
-  const modelWithTools = model.bindTools(dbTools);
+  // Use centralized fallback for AI testing and call database tool directly to verify
+  const { chatWithFallback } = require('./aiUtils');
 
   const messages = [
     new SystemMessage(
       'You are ConsumerAI. You have database tools to query user files. ' +
-      'When user asks about their files, use get_user_files tool to check database.'
+      'When user asks about their files, check the database and respond concisely.'
     ),
     new HumanMessage('Can you get my credit reports?')
   ];
 
   console.log('Sending message to AI: "Can you get my credit reports?"');
-  
   try {
-    const response = await modelWithTools.invoke(messages);
+    const { response } = await chatWithFallback(messages);
+    const content = response && (response.content || response) ? (response.content || response) : '';
     console.log('\nAI Response:');
-    console.log('Content:', response.content);
-    console.log('Tool Calls:', response.tool_calls);
-    
-    if (response.tool_calls && response.tool_calls.length > 0) {
-      console.log('\n✅ AI called tools!');
-      response.tool_calls.forEach(call => {
-        console.log(`   - Tool: ${call.name}`);
-        console.log(`   - Args: ${JSON.stringify(call.args)}`);
-      });
-    } else {
-      console.log('\n⚠️ AI did not call any tools');
-    }
+    console.log('Content:', content);
   } catch (error) {
     console.log('❌ Error:', error.message);
+  }
+
+  // Also test the DB tool directly
+  console.log('\nTesting DB tool directly:');
+  try {
+    const result = await dbTools[0].func({});
+    console.log('DB tool result:', result);
+  } catch (error) {
+    console.log('DB tool error:', error.message);
   }
 
   console.log('\n=== Test Complete ===');

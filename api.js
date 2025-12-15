@@ -41,6 +41,9 @@ try {
   graph = null;
 }
 
+// Import AI utilities
+const { chatWithFallback } = require('./aiUtils');
+
 // Initialize Supabase client (optional)
 let supabase = null;
 console.log('SUPABASE_URL value:', process.env.SUPABASE_URL);
@@ -142,108 +145,27 @@ if (hfApiKey) {
   console.warn('HF_TOKEN not found in environment variables');
 }
 
-// Fallback chat function: Try Google first, then Mistral
-async function chatWithFallback(messages) {
-  // Try Google first
-  if (chatModel) {
-    try {
-      console.log('Attempting chat with Google Gemini...');
-      const response = await chatModel.invoke(messages);
-      console.log('Google Gemini response successful');
-      return { response, model: 'google-gemini' };
-    } catch (error) {
-      console.warn('Google Gemini failed, trying Mistral backup:', error.message);
-    }
+// Initialize MuleRouter (Qwen) as fourth backup AI model
+let muleRouterClient = null;
+const muleRouterApiKey = process.env.MULEROUTER_API_KEY;
+if (muleRouterApiKey) {
+  try {
+    console.log('Initializing MuleRouter (Qwen) client');
+    const { OpenAI } = require('openai');
+    muleRouterClient = new OpenAI({
+      baseURL: 'https://api.mulerouter.ai/v1',
+      apiKey: muleRouterApiKey,
+    });
+    console.log('MuleRouter (Qwen) client initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize MuleRouter (Qwen) client:', error.message);
+    muleRouterClient = null;
   }
-
-  // Fallback to Mistral
-  if (mistralClient) {
-    try {
-      console.log('Attempting chat with Mistral backup...');
-
-      // Convert LangChain messages to Mistral format
-      const mistralMessages = messages.map(msg => {
-        if (msg instanceof SystemMessage) {
-          return { role: 'system', content: msg.content };
-        } else if (msg instanceof HumanMessage) {
-          return { role: 'user', content: msg.content };
-        } else if (msg instanceof AIMessage) {
-          return { role: 'assistant', content: msg.content };
-        } else {
-          return { role: 'user', content: msg.content };
-        }
-      });
-
-      const mistralResponse = await mistralClient.chat.complete({
-        model: 'mistral-small-latest',
-        messages: mistralMessages,
-        temperature: 0.7,
-        max_tokens: 2048,
-        stream: false
-      });
-
-      // Convert Mistral response to LangChain format
-      const content = mistralResponse.choices[0]?.message?.content || 'I apologize, but I encountered an error processing your request.';
-      console.log('Mistral backup response successful');
-
-      const response = {
-        content: content,
-        additional_kwargs: {},
-        tool_calls: []
-      };
-
-      return { response, model: 'mistral' };
-    } catch (error) {
-      console.error('Mistral backup also failed:', error.message);
-    }
-  }
-
-  // Third fallback to Hugging Face
-  if (hfClient) {
-    try {
-      console.log('Attempting chat with Hugging Face fallback...');
-
-      // Convert LangChain messages to OpenAI format (HF router uses OpenAI-compatible API)
-      const hfMessages = messages.map(msg => {
-        if (msg instanceof SystemMessage) {
-          return { role: 'system', content: msg.content };
-        } else if (msg instanceof HumanMessage) {
-          return { role: 'user', content: msg.content };
-        } else if (msg instanceof AIMessage) {
-          return { role: 'assistant', content: msg.content };
-        } else {
-          return { role: 'user', content: msg.content };
-        }
-      });
-
-      const hfResponse = await hfClient.chat.completions.create({
-        model: 'meta-llama/Llama-3.2-3B-Instruct',
-        messages: hfMessages,
-        temperature: 0.7,
-        max_tokens: 2048,
-        stream: false
-      });
-
-      // Convert HF response to LangChain format
-      const content = hfResponse.choices[0]?.message?.content || 'I apologize, but I encountered an error processing your request.';
-      console.log('Hugging Face fallback response successful');
-
-      const response = {
-        content: content,
-        additional_kwargs: {},
-        tool_calls: []
-      };
-
-      return { response, model: 'huggingface' };
-    } catch (error) {
-      console.error('Hugging Face fallback also failed:', error.message);
-      throw new Error('All AI models (Google Gemini, Mistral, and Hugging Face) failed to respond');
-    }
-  }
-
-  // No models available
-  throw new Error('No AI models are available. Please check your API keys.');
+} else {
+  console.warn('MULEROUTER_API_KEY not found in environment variables');
 }
+
+// chatWithFallback moved to `aiUtils.js` and imported earlier to avoid duplication
 
 // Initialize Stripe (optional)
 let stripe = null;
@@ -306,19 +228,16 @@ async function processQueue() {
   const { fn, resolve, reject } = requestQueue.shift();
   
   try {
-    // Check if Google AI model is available
-    if (!chatModel) {
-      throw new Error('Google AI (Gemini) model not configured - Please ensure you have:\n1. Valid GOOGLE_API_KEY environment variable\n2. Google AI API enabled in your Google Cloud project\n3. Proper API key with Gemini API access');
-    }
+    // Call the provided function (fn may use the centralized fallback)
     const result = await fn();
     resolve(result);
   } catch (error) {
-    console.error('Google AI request failed:', error.message);
-    // Check for common Google Cloud errors
-    if (error.message.includes('quota') || error.message.includes('rate limit')) {
-      reject(new Error('Google AI quota exceeded. Please check your quota limits in Google Cloud Console.'));
-    } else if (error.message.includes('permission') || error.message.includes('unauthorized')) {
-      reject(new Error('Authorization failed. Please check your API key and permissions.'));
+    console.error('AI request failed:', error.message);
+    // Normalize common errors but don't assume provider
+    if (error.message.toLowerCase().includes('quota') || error.message.toLowerCase().includes('rate limit')) {
+      reject(new Error('AI quota exceeded. Please check your provider quotas.'));
+    } else if (error.message.toLowerCase().includes('permission') || error.message.toLowerCase().includes('unauthorized')) {
+      reject(new Error('Authorization failed. Please check your API keys and permissions.'));
     } else {
       reject(new Error('AI service error: ' + error.message));
     }
@@ -421,23 +340,6 @@ async function getChatHistory(sessionId, userId = null) {
       "=== CONSUMERAI SYSTEM INSTRUCTIONS ===\n\n" +
       "You are ConsumerAI, a professional legal assistant specializing in consumer rights and credit law under FDCPA and FCRA regulations.\n\n" +
       
-      "=== DATABASE ACCESS (CRITICAL) ===\n" +
-      "• You have FULL ACCESS to Supabase database\n" +
-      "• Table: 'report_analyses' with columns: user_id (UUID), file_name, file_path, processed_at, analysis\n" +
-      "• You receive userId in every request via state.userId\n" +
-      "• Query example: supabase.from('report_analyses').select('*').eq('user_id', userId)\n" +
-      "• The system automatically fetches user files and provides them in context\n\n" +
-      
-      "=== CURRENT USER FILES ===\n" +
-      filesContext + "\n\n" +
-      
-      "=== WHEN USER ASKS ABOUT FILES ===\n" +
-      "• 'Can you get my reports?' → YES, reference specific files above by name and date\n" +
-      "• 'Do you have access?' → YES, show them their uploaded files\n" +
-      "• 'Can you see my credit report?' → YES, list their files with dates\n" +
-      "• If NO files: Ask 'Have you uploaded a credit report yet? I can analyze it for FCRA violations once you upload.'\n" +
-      "• If HAS files: 'Yes! I can see you uploaded [filename] on [date]. Would you like me to analyze it?'\n\n" +
-      
       "=== YOUR CAPABILITIES ===\n" +
       "• Analyze credit reports for FCRA/FDCPA violations\n" +
       "• Detect errors, outdated items, identity theft indicators\n" +
@@ -446,11 +348,9 @@ async function getChatHistory(sessionId, userId = null) {
       "• Provide actionable steps for disputes\n\n" +
       
       "=== RESPONSE RULES ===\n" +
-      "• Always check user files context first\n" +
-      "• Reference specific files by name when they exist\n" +
-      "• Ask clarifying questions if user intent is unclear\n" +
       "• Be professional, accurate, and helpful\n" +
-      "• Focus on actionable legal advice"
+      "• Focus on actionable legal advice\n" +
+      "• Only mention files if the user asks about them"
     );
     
     const history = [systemMessage];
@@ -507,9 +407,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       if (socketId && global.io) {
         console.log('Emitting cached response events to socket:', socketId);
         global.io.to(socketId).emit('agent-thinking-start');
-        global.io.to(socketId).emit('agent-thinking-complete', {
-          response: stripMarkdown(cachedResponse)
-        });
+        global.io.to(socketId).emit('agent-thinking-complete');
         console.log('Cached events emitted');
       } else {
         console.log('Cannot emit cached events - socketId:', socketId, 'io:', !!global.io);
@@ -536,11 +434,11 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     let usedAgent = 'direct';
     
     // Special case: Direct report analysis ONLY for explicit analysis requests
-    const isReportAnalysis = (message.toLowerCase().includes('analyze') && 
+    const isReportAnalysis = (message.toLowerCase().includes('analyz') && 
                              (message.toLowerCase().includes('report') || 
                               message.toLowerCase().includes('document') ||
                               message.toLowerCase().includes('credit'))) ||
-                            (message.toLowerCase().includes('check') && message.toLowerCase().includes('report') && message.toLowerCase().includes('analyze'));
+                            (message.toLowerCase().includes('check') && message.toLowerCase().includes('report') && message.toLowerCase().includes('analyz'));
     
     if (isReportAnalysis && supabase && userId) {
       reasoningSteps.push('Direct report analysis activated');
@@ -591,11 +489,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
             log: 'Credit report analysis completed',
             timestamp: new Date().toISOString()
           });
-          global.io.to(socketId).emit('agent-thinking-complete', {
-            response: stripMarkdown(aiResponse.content || 'Analysis completed'),
-            sessionId: sessionId,
-            timestamp: new Date().toISOString()
-          });
+          global.io.to(socketId).emit('agent-thinking-complete');
         }
 
         // Save report analysis to database
@@ -642,62 +536,121 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       }
     }
     
-    if (needsAgents && graph) {
-      reasoningSteps.push('Supervisor agent analyzing');
-      usedAgent = 'supervisor';
+    if (needsAgents) {
+      reasoningSteps.push('Direct agent routing');
       
-      // Emit agent selection
-      if (socketId && global.io) {
-        console.log('Emitting agent-step to socket:', socketId);
-        global.io.to(socketId).emit('agent-step', {
-          tool: 'supervisor',
-          toolInput: message,
-          log: 'Using supervisor agent',
-          timestamp: new Date().toISOString()
-        });
-      }
+      const msg = message.toLowerCase();
+      let agentResult = null;
+      let selectedAgent = 'direct';
       
-      // Emit thinking start
-      if (socketId && global.io) {
-        console.log('Emitting agent-thinking-start to socket:', socketId);
-        global.io.to(socketId).emit('agent-thinking-start');
-      }
-
-      try {
-        // Use supervisor graph with timeout
-        const result = await Promise.race([
-          graph.invoke({
-            messages: [{ role: 'user', content: message }],
-            userId: userId,
-            supabase: supabase
-          }),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Agent timeout')), 30000) // Increased to 30 seconds
-          )
-        ]);
-        
-        const lastMessage = result.messages[result.messages.length - 1];
-        var aiResponse = { content: lastMessage.content };
-        usedAgent = lastMessage.name || 'supervisor';
-        
-        // Emit agent steps
+      // Direct agent routing based on message content
+      if (msg.includes('track') || msg.includes('certified mail') || msg.includes('usps') || 
+          msg.includes('timeline') || msg.includes('deadline') || msg.includes('when did')) {
+        selectedAgent = 'tracking';
         if (socketId && global.io) {
-          result.messages.forEach(msg => {
-            if (msg.name) {
-              global.io.to(socketId).emit('agent-step', {
-                tool: msg.name.replace('Agent', '').toLowerCase(),
-                toolInput: message,
-                log: `${msg.name} completed`,
-                timestamp: new Date().toISOString()
-              });
-            }
-          });
-          // Emit thinking complete
-          global.io.to(socketId).emit('agent-thinking-complete', {
-            response: stripMarkdown(aiResponse.content),
-            sessionId: sessionId,
+          global.io.to(socketId).emit('agent-step', {
+            tool: 'tracking',
+            toolInput: message,
+            log: 'Using tracking agent',
             timestamp: new Date().toISOString()
           });
+        }
+        
+        try {
+          const { trackingAgent } = require('./agents/supervisor');
+          agentResult = await trackingAgent({ messages: [{ content: message }], userId, supabase });
+        } catch (error) {
+          console.error('Tracking agent error:', error);
+          agentResult = { messages: [{ content: 'Tracking service temporarily unavailable.', name: 'TrackingAgent' }] };
+        }
+        
+      } else if (msg.includes('letter') || msg.includes('dispute letter') || msg.includes('cease')) {
+        selectedAgent = 'letter';
+        if (socketId && global.io) {
+          global.io.to(socketId).emit('agent-step', {
+            tool: 'letter',
+            toolInput: message,
+            log: 'Using letter agent',
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        try {
+          const { letterAgent } = require('./agents/supervisor');
+          agentResult = await letterAgent({ messages: [{ content: message }], userId, supabase });
+        } catch (error) {
+          console.error('Letter agent error:', error);
+          agentResult = { messages: [{ content: 'Letter generation service temporarily unavailable.', name: 'LetterAgent' }] };
+        }
+        
+      } else if (msg.includes('legal') || msg.includes('law') || msg.includes('rights') || 
+                 msg.includes('statute') || msg.includes('fdcp') || msg.includes('fcr')) {
+        selectedAgent = 'legal';
+        if (socketId && global.io) {
+          global.io.to(socketId).emit('agent-step', {
+            tool: 'legal',
+            toolInput: message,
+            log: 'Using legal agent',
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        try {
+          const { legalAgent } = require('./agents/supervisor');
+          agentResult = await legalAgent({ messages: [{ content: message }], userId, supabase });
+        } catch (error) {
+          console.error('Legal agent error:', error);
+          agentResult = { messages: [{ content: 'Legal information service temporarily unavailable.', name: 'LegalAgent' }] };
+        }
+        
+      } else if (msg.includes('search') || msg.includes('find') || msg.includes('research')) {
+        selectedAgent = 'search';
+        if (socketId && global.io) {
+          global.io.to(socketId).emit('agent-step', {
+            tool: 'search',
+            toolInput: message,
+            log: 'Using search agent',
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        try {
+          const { searchAgent } = require('./agents/supervisor');
+          agentResult = await searchAgent({ messages: [{ content: message }], userId, supabase });
+        } catch (error) {
+          console.error('Search agent error:', error);
+          agentResult = { messages: [{ content: 'Search service temporarily unavailable.', name: 'SearchAgent' }] };
+        }
+        
+      } else {
+        // Default to report agent for analysis requests
+        selectedAgent = 'report';
+        if (socketId && global.io) {
+          global.io.to(socketId).emit('agent-step', {
+            tool: 'report',
+            toolInput: message,
+            log: 'Using report agent',
+            timestamp: new Date().toISOString()
+          });
+        }
+        
+        try {
+          const { reportAgent } = require('./agents/supervisor');
+          agentResult = await reportAgent({ messages: [{ content: message }], userId, supabase });
+        } catch (error) {
+          console.error('Report agent error:', error);
+          agentResult = { messages: [{ content: 'Report analysis service temporarily unavailable.', name: 'ReportAgent' }] };
+        }
+      }
+      
+      if (agentResult && agentResult.messages && agentResult.messages.length > 0) {
+        const lastMessage = agentResult.messages[agentResult.messages.length - 1];
+        var aiResponse = { content: lastMessage.content };
+        usedAgent = lastMessage.name || selectedAgent;
+        
+        // Emit thinking complete
+        if (socketId && global.io) {
+          global.io.to(socketId).emit('agent-thinking-complete');
         }
 
         // Save agent response to database
@@ -738,54 +691,6 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
             steps: reasoningSteps
           }
         };
-      } catch (agentError) {
-        console.log('Agent failed, falling back to direct AI:', agentError.message);
-        reasoningSteps.push('Agent failed, using direct AI response');
-
-        // Emit thinking complete for failed agent
-        if (socketId && global.io) {
-          global.io.to(socketId).emit('agent-thinking-complete', {
-            response: 'I apologize, but I encountered an error processing your request with advanced analysis. Let me provide a direct response instead.',
-            sessionId: sessionId,
-            timestamp: new Date().toISOString()
-          });
-        }
-
-        // Save error response to database
-        if (supabase && userId) {
-          try {
-            await supabase.from('chat_history').insert([
-              {
-                session_id: sessionId,
-                user_id: userId,
-                role: 'user',
-                content: message,
-                created_at: new Date().toISOString()
-              },
-              {
-                session_id: sessionId,
-                user_id: userId,
-                role: 'assistant',
-                content: 'I apologize, but I encountered an error processing your request with advanced analysis. Let me provide a direct response instead.',
-                created_at: new Date().toISOString()
-              }
-            ]);
-          } catch (dbError) {
-            console.error('Failed to save error messages to database:', dbError);
-          }
-        }
-
-        return {
-          message: 'I apologize, but I encountered an error processing your request with advanced analysis. Let me provide a direct response instead.',
-          sessionId,
-          messageId: `${Date.now()}-ai`,
-          created_at: new Date().toISOString(),
-          usedModel: 'error',
-          decisionTrace: {
-            usedAgent: 'error',
-            steps: reasoningSteps
-          }
-        };
       }
     } else {
       // Regular chat - direct Google AI
@@ -803,11 +708,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
 
       // Emit thinking complete for direct AI
       if (socketId && global.io) {
-        global.io.to(socketId).emit('agent-thinking-complete', {
-          response: stripMarkdown(aiResponse.content),
-          sessionId: sessionId,
-          timestamp: new Date().toISOString()
-        });
+        global.io.to(socketId).emit('agent-thinking-complete');
       }
 
       // Save to database for direct AI
@@ -1671,3 +1572,4 @@ module.exports = async function handler(req, res) {
 
 // Export helper functions for use by agents
 module.exports.getUserFilesContext = getUserFilesContext;
+module.exports.chatWithFallback = chatWithFallback;

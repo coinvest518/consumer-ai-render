@@ -5,6 +5,7 @@ const { z } = require('zod');
 
 // Import dependencies
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
+const { chatWithFallback } = require('../aiUtils');
 
 // Define state
 const AgentState = Annotation.Root({
@@ -53,25 +54,24 @@ if ((process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY) && ChatGoogleG
   }
 }
 
-// AI call with Google model
+// AI call using unified fallback (Mistral/HF/MuleRouter then Google)
 async function callAI(messages) {
   try {
-    console.log('[Supervisor] callAI called, model available:', !!model);
-    if (!model) {
-      console.log('[Supervisor] Model not available, GOOGLE_API_KEY present:', !!process.env.GOOGLE_API_KEY);
-      return { content: 'AI service is not configured. Please check your GOOGLE_API_KEY.' };
-    }
-    
+    console.log('[Supervisor] callAI called, using unified fallback');
     await delay(100); // Minimal delay for rate limiting
-    console.log('[Supervisor] Calling AI model...');
-    const result = await Promise.race([
-      model.invoke(messages),
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('AI timeout')), 20000) // 20 second timeout for AI calls
-      )
-    ]);
-    console.log('[Supervisor] AI call successful');
-    return result;
+    console.log('[Supervisor] Calling chatWithFallback...');
+
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('AI timeout')), 30000));
+    const responseObj = await Promise.race([chatWithFallback(messages), timeoutPromise]);
+
+    // chatWithFallback returns { response, model }
+    if (responseObj && responseObj.response) {
+      console.log('[Supervisor] AI call successful with model:', responseObj.model);
+      return responseObj.response;
+    }
+
+    console.warn('[Supervisor] chatWithFallback returned unexpected result:', responseObj);
+    return { content: 'AI service returned unexpected response format.' };
   } catch (error) {
     console.error('[Supervisor] AI request failed:', error.message);
     return { content: `AI service unavailable: ${error.message}` };
@@ -178,23 +178,21 @@ async function supervisor(state) {
       return { next: 'calendar' };
     }
     
-    // Fallback to AI routing if available
-    if (model) {
-      try {
-        const response = await prompt.pipe(model).invoke({
-          messages: state.messages,
-          options: members.join(', ')
-        });
-        
-        const content = response.content.toLowerCase();
-        for (const member of members) {
-          if (content.includes(member)) {
-            return { next: member };
-          }
-        }
-      } catch (error) {
-        console.error('AI routing failed:', error);
+    // Fallback to AI routing using centralized fallback
+    try {
+      const { chatWithFallback } = require('../aiUtils');
+      const routingMessages = [
+        new SystemMessage(systemPrompt),
+        ...state.messages,
+        new HumanMessage(`Who should act next? Select one of: ${members.join(', ')}`)
+      ];
+      const { response } = await chatWithFallback(routingMessages);
+      const content = response && (response.content || response) ? String(response.content || response).toLowerCase() : '';
+      for (const member of members) {
+        if (content.includes(member)) return { next: member };
       }
+    } catch (error) {
+      console.error('AI routing failed:', error);
     }
     
     return { next: END };
@@ -390,13 +388,8 @@ async function reportAgent(state) {
           extractedText.substring(0, 50000) + '\n\n[Text truncated for analysis...]' : 
           extractedText;
         
-        const { GoogleGenerativeAI } = require('@google/generative-ai');
-        const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-        
-        // Send limited text instead of full PDF to avoid quota issues
-        const detailedAnalysis = await model.generateContent([
-          `You are an expert credit report analyst. Analyze this credit report text and provide:
+        // Use fallback chat function instead of direct Google call
+        const analysisPrompt = `You are an expert credit report analyst. Analyze this credit report text and provide:
 
 1. **HIGHLIGHTED VIOLATIONS** - Mark specific FCRA/FDCPA violations with 🚨
 2. **OUTLINED ERRORS** - List errors and inaccuracies with ⚠️ 
@@ -413,11 +406,18 @@ Focus on:
 Be specific and reference exact content from the document. Keep your analysis comprehensive but concise.
 
 CREDIT REPORT TEXT:
-${limitedText}`
-        ]);
+${limitedText}`;
+        
+        const messages = [
+          new SystemMessage('You are an expert credit report analyst specializing in FCRA and FDCPA compliance.'),
+          new HumanMessage(analysisPrompt)
+        ];
+        
+        const { response: detailedAnalysis, model: usedModel } = await chatWithFallback(messages);
+        console.log(`[ReportAgent] Analysis completed using model: ${usedModel}`);
         
         // Store analysis in database
-        const analysisText = detailedAnalysis.response.text();
+        const analysisText = detailedAnalysis.content;
         const analysisResult = {
           summary: analysisText.substring(0, 200) + '...',
           detailed_analysis: analysisText,
@@ -1080,79 +1080,6 @@ async function trackingAgent(state) {
     return {
       messages: [new HumanMessage({
         content: `I encountered an error calculating timelines. Please provide your mailing date and dispute type, and I'll help you understand the legal deadlines.`,
-        name: 'TrackingAgent'
-      })],
-    };
-  }
-}
-      let disputeType = 'FDCPA_validation';
-      if (msg.includes('credit') || msg.includes('fcra')) disputeType = 'FCRA_dispute';
-      if (msg.includes('cease') || msg.includes('stop')) disputeType = 'cease_desist';
-      
-      const recommendations = USPSIntegration.getMailingRecommendations(disputeType);
-      const timeframes = USPSIntegration.estimateDeliveryTimeframes(recommendations.mailType);
-      
-      let response = `📮 **Mailing Strategy for Your Dispute**\n\n`;
-      response += `**Recommended Method**: ${recommendations.mailType.toUpperCase()} with return receipt\n`;
-      response += `**Why**: ${recommendations.advice}\n\n`;
-      response += `⏰ **Estimated Delivery**: ${timeframes.estimatedDelivery.earliest} to ${timeframes.estimatedDelivery.latest}\n`;
-      response += `${timeframes.legalAdvice}\n\n`;
-      response += `📋 **Important**: ${recommendations.template}`;
-      
-      return {
-        messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
-      };
-    }
-    
-    // Handle deadline calculations without tracking numbers
-    if (msg.includes('deadline') || msg.includes('when') || msg.includes('how long')) {
-      let response = `⏰ **Consumer Law Deadlines**\n\n`;
-      
-      if (msg.includes('fdcpa') || msg.includes('debt')) {
-        response += `**FDCPA Validation Requests**:\n`;
-        response += `• You have **30 days** from first contact to request validation\n`;
-        response += `• Debt collector must **stop collection** during validation period\n`;
-        response += `• Send via **certified mail** for proof of delivery\n\n`;
-        response += `💡 **Pro Tip**: The 30-day clock starts when you RECEIVE their notice, not when they send it.`;
-      } else if (msg.includes('fcra') || msg.includes('credit')) {
-        response += `**FCRA Credit Disputes**:\n`;
-        response += `• Credit bureaus have **30 days** to investigate\n`;
-        response += `• Extended to **45 days** if you provide additional info\n`;
-        response += `• Must provide results within **5 days** of completion\n\n`;
-        response += `💡 **Pro Tip**: Online disputes are valid, but certified mail provides better documentation.`;
-      } else {
-        response += `I can help you calculate specific deadlines! Tell me:\n`;
-        response += `• Is this for FDCPA (debt collection) or FCRA (credit report)?\n`;
-        response += `• When did you receive their notice or when do you plan to send your dispute?\n`;
-        response += `• Did you send it certified mail?`;
-      }
-      
-      return {
-        messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
-      };
-    }
-    
-    // Default helpful response
-    const content = `📬 **I'm your mail tracking and deadline assistant!**\n\n` +
-      `I can help you with:\n` +
-      `• 📦 **Track certified mail** - Just give me your tracking number\n` +
-      `• ⏰ **Calculate legal deadlines** - For FDCPA and FCRA disputes\n` +
-      `• 📮 **Mailing advice** - Best practices for legal documents\n` +
-      `• 🎯 **Strategy tips** - When and how to send dispute letters\n\n` +
-      `**What would you like help with?** Try saying:\n` +
-      `• "Track my certified mail [tracking number]"\n` +
-      `• "When is my FDCPA deadline?"\n` +
-      `• "Should I send this certified mail?"\n` +
-      `• "How long do credit bureaus have to respond?"`;
-    
-    return {
-      messages: [new HumanMessage({ content, name: 'TrackingAgent' })],
-    };
-  } catch (error) {
-    console.error('Tracking agent error:', error);
-    return {
-      messages: [new HumanMessage({
-        content: `I'm having trouble right now, but I can still help! Visit https://tools.usps.com for tracking, and remember: certified mail is your best friend for legal disputes. Keep those receipts! 📋`,
         name: 'TrackingAgent'
       })],
     };

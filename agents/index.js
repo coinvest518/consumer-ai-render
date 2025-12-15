@@ -1,4 +1,5 @@
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
+const { chatWithFallback } = require('../aiUtils');
 const { TavilySearch } = require('@langchain/tavily');
 const axios = require('axios');
 const { DynamicTool } = require('@langchain/core/tools');
@@ -94,13 +95,14 @@ async function reportAgent(state) {
       };
     }
   } else {
-    // Fallback to text analysis
-    const analysis = await model.invoke([
+    // Fallback to text analysis via centralized multi-provider fallback
+    const { response } = await chatWithFallback([
       new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
       new HumanMessage(message)
     ]);
+    const content = response && (response.content || response) ? (response.content || response) : '';
     return {
-      messages: [{ role: 'assistant', content: analysis.content }],
+      messages: [{ role: 'assistant', content }],
       toolResults: [{ tool: 'report', result: 'Credit report analyzed' }]
     };
   }
@@ -108,24 +110,26 @@ async function reportAgent(state) {
 
 async function letterAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const letter = await model.invoke([
+  const { response } = await chatWithFallback([
     new SystemMessage('Generate FDCPA/FCRA dispute letters with proper legal formatting.'),
     new HumanMessage(message)
   ]);
+  const content = response && (response.content || response) ? (response.content || response) : '';
   return {
-    messages: [{ role: 'assistant', content: letter.content }],
+    messages: [{ role: 'assistant', content }],
     toolResults: [{ tool: 'letter', result: 'Dispute letter generated' }]
   };
 }
 
 async function calendarAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const reminder = await model.invoke([
+  const { response } = await chatWithFallback([
     new SystemMessage('Set legal deadline reminders and calendar events.'),
     new HumanMessage(message)
   ]);
+  const content = response && (response.content || response) ? (response.content || response) : '';
   return {
-    messages: [{ role: 'assistant', content: reminder.content }],
+    messages: [{ role: 'assistant', content }],
     toolResults: [{ tool: 'calendar', result: 'Reminder set' }]
   };
 }
@@ -134,12 +138,13 @@ async function legalAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
   const { enhancedLegalSearch } = require('../legalSearch');
   const legalInfo = await enhancedLegalSearch(message);
-  const response = await model.invoke([
+  const { response } = await chatWithFallback([
     new SystemMessage(`Legal context: ${legalInfo}`),
     new HumanMessage(message)
   ]);
+  const content = response && (response.content || response) ? (response.content || response) : '';
   return {
-    messages: [{ role: 'assistant', content: response.content }],
+    messages: [{ role: 'assistant', content }],
     toolResults: [{ tool: 'legal', result: 'Legal database searched' }]
   };
 }
