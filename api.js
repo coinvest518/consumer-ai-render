@@ -204,11 +204,11 @@ function detectAgentNeed(message) {
 async function getChatHistory(sessionId, userId = null) {
   if (!chatSessions.has(sessionId)) {
     const systemMessage = new SystemMessage(
-      "You are ConsumerAI, a helpful assistant specialized in consumer rights, " +
-      "credit disputes, and financial advice. You can also track USPS certified mail and packages " +
-      "using tracking numbers. Be clear, professional, and focused on helping users " +
-      "understand their rights and options. When users ask about tracking mail or packages, " +
-      "let them know you can help with USPS tracking."
+      "You are ConsumerAI, a professional legal assistant specializing in consumer rights and credit law under FDCPA and FCRA regulations. " +
+      "You help consumers understand their rights, dispute credit report errors, and navigate the dispute process. " +
+      "You provide accurate legal information about response timelines, dispute procedures, and consumer protections. " +
+      "Be professional, accurate, and focused on helping users understand and exercise their legal rights. " +
+      "When users mention mail or certified mail, explain the legal requirements and help them track their dispute timeline."
     );
     
     const history = [systemMessage];
@@ -247,13 +247,13 @@ function getQuickResponse(message) {
   const msg = message.toLowerCase();
   
   if (msg.includes('hello') || msg.includes('hi ') || msg.includes('hey')) {
-    return 'Hello! I\'m ConsumerAI, your legal assistant for consumer rights and credit disputes. How can I help you today?';
+    return 'Hello! I\'m ConsumerAI, your professional legal assistant for consumer rights and credit disputes. I specialize in FDCPA and FCRA regulations. How can I help you with your consumer rights today?';
   }
   if (msg.includes('what can you do') || msg.includes('what do you do')) {
-    return 'I can help you with consumer rights, credit disputes, FDCPA/FCRA violations, dispute letters, and legal advice. I can also search for information, track USPS certified mail and packages, send emails, and set reminders.';
+    return 'I help consumers understand and exercise their rights under consumer protection laws. I can explain dispute procedures, calculate legal timelines, analyze credit reports for violations, generate dispute letters, and provide guidance on FCRA/FDCPA compliance.';
   }
   if (msg.includes('how are you') || msg.includes('how do you work')) {
-    return 'I\'m doing great! I\'m here to help you with consumer law questions and credit disputes. What would you like assistance with?';
+    return 'I\'m ready to assist you with consumer law questions and credit disputes. I provide professional legal guidance based on FDCPA and FCRA regulations. What consumer rights issue can I help you with?';
   }
   return null;
 }
@@ -319,25 +319,88 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     if (isReportAnalysis && supabase) {
       reasoningSteps.push('Direct report analysis activated');
       usedAgent = 'report';
-      
+
+      // Emit agent selection for report analysis
+      if (socketId && global.io) {
+        console.log('Emitting agent-step for report analysis to socket:', socketId);
+        global.io.to(socketId).emit('agent-step', {
+          tool: 'report',
+          toolInput: message,
+          log: 'Analyzing credit report',
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Human in loop: Emit notification for human review
+      if (socketId && global.io) {
+        console.log('Emitting human-review-needed for credit report analysis');
+        global.io.to(socketId).emit('human-review-needed', {
+          type: 'credit_report_analysis',
+          userId: userId,
+          message: message,
+          timestamp: new Date().toISOString(),
+          requiresApproval: true
+        });
+      }
+
       try {
         // Import reportAgent directly
         const { reportAgent } = require('./agents/supervisor');
-        
+
+        // Emit thinking start
+        if (socketId && global.io) {
+          global.io.to(socketId).emit('agent-thinking-start');
+        }
+
         // Call reportAgent with proper state
         const result = await reportAgent({
           messages: [{ content: message }],
           userId: userId,
           supabase: supabase
         });
-        
+
         const lastMessage = result.messages ? result.messages[result.messages.length - 1] : result;
         var aiResponse = { content: lastMessage.content || lastMessage.message || 'Analysis completed' };
-        
+
+        // Emit completion
+        if (socketId && global.io) {
+          global.io.to(socketId).emit('agent-step', {
+            tool: 'report',
+            toolInput: message,
+            log: 'Credit report analysis completed',
+            timestamp: new Date().toISOString()
+          });
+          global.io.to(socketId).emit('agent-thinking-complete', {
+            sessionId: sessionId,
+            timestamp: new Date().toISOString()
+          });
+        }
+
         reasoningSteps.push('Report analysis completed successfully');
       } catch (reportError) {
         console.log('Direct report analysis failed:', reportError.message);
+
+        // Emit error state
+        if (socketId && global.io) {
+          global.io.to(socketId).emit('agent-step', {
+            tool: 'report',
+            toolInput: message,
+            log: 'Credit report analysis failed',
+            timestamp: new Date().toISOString()
+          });
+          global.io.to(socketId).emit('agent-thinking-complete', {
+            sessionId: sessionId,
+            timestamp: new Date().toISOString()
+          });
+        }
+
         reasoningSteps.push('Report analysis failed, using direct AI response');
+
+        // Emit thinking start for fallback
+        if (socketId && global.io) {
+          global.io.to(socketId).emit('agent-thinking-start');
+        }
+
         var aiResponse = await processWithRateLimit(() => chatModel.invoke(history));
       }
     } else if (needsAgents && graph) {
@@ -390,18 +453,46 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
               });
             }
           });
+          // Emit thinking complete
+          global.io.to(socketId).emit('agent-thinking-complete', {
+            sessionId: sessionId,
+            timestamp: new Date().toISOString()
+          });
         }
         
         reasoningSteps.push('Agent completed successfully');
       } catch (agentError) {
         console.log('Agent failed, falling back to direct AI:', agentError.message);
         reasoningSteps.push('Agent failed, using direct AI response');
+
+        // Emit thinking complete for failed agent
+        if (socketId && global.io) {
+          global.io.to(socketId).emit('agent-thinking-complete', {
+            sessionId: sessionId,
+            timestamp: new Date().toISOString()
+          });
+        }
+
         var aiResponse = await processWithRateLimit(() => chatModel.invoke(history));
       }
     } else {
       // Regular chat - direct Google AI
       reasoningSteps.push('Direct AI response');
+
+      // Emit thinking start for direct AI
+      if (socketId && global.io) {
+        global.io.to(socketId).emit('agent-thinking-start');
+      }
+
       var aiResponse = await processWithRateLimit(() => chatModel.invoke(history));
+
+      // Emit thinking complete for direct AI
+      if (socketId && global.io) {
+        global.io.to(socketId).emit('agent-thinking-complete', {
+          sessionId: sessionId,
+          timestamp: new Date().toISOString()
+        });
+      }
     }
     
     const aiMessage = new AIMessage(aiResponse.content);
@@ -958,6 +1049,39 @@ module.exports = async function handler(req, res) {
       return res.status(404).json({
         error: { message: `API endpoint /${path} not found`, code: 'NOT_FOUND' }
       });
+    }
+
+    // Human approval endpoint for sensitive operations
+    if (path === 'human-approve' && req.method === 'POST') {
+      try {
+        const { approvalId, approved, feedback } = req.body;
+
+        if (!approvalId) {
+          return res.status(400).json({ error: 'approvalId is required' });
+        }
+
+        // Just emit socket event to notify the user/AI - no database storage
+        if (global.io && approvalId) {
+          const eventType = approved ? 'human-approval-granted' : 'human-approval-denied';
+          global.io.to(approvalId).emit(eventType, {
+            approvalId,
+            approved,
+            feedback,
+            timestamp: new Date().toISOString()
+          });
+        }
+
+        return res.status(200).json({
+          success: true,
+          approvalId,
+          approved,
+          feedback
+        });
+
+      } catch (error) {
+        console.error('Human approval error:', error);
+        return res.status(500).json({ error: 'Failed to process approval' });
+      }
     }
 
   } catch (error) {

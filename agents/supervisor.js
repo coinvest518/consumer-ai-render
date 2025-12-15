@@ -87,13 +87,13 @@ const members = ['search', 'report', 'letter', 'legal', 'email', 'calendar', 'tr
 // Supervisor prompt
 const systemPrompt = `You are a supervisor managing ConsumerAI agents: ${members.join(', ')}.
 Given the user request, respond with the agent to act next:
-- search: Web search and research
-- report: Credit report analysis
-- letter: Generate dispute letters
-- legal: Legal database queries
-- email: Send notifications
-- calendar: Set reminders
-- tracking: Track mail delivery
+- search: Web search and research for consumer law information
+- report: Credit report analysis and violation detection
+- letter: Generate dispute letters and legal correspondence
+- legal: Legal database queries and statute research
+- email: Send notifications and follow-up emails
+- calendar: Set reminders for legal deadlines
+- tracking: Calculate legal timelines and dispute process tracking
 When finished, respond with FINISH.`;
 
 
@@ -861,63 +861,150 @@ async function calendarAgent(state) {
 
 async function trackingAgent(state) {
   const message = state.messages[state.messages.length - 1].content;
-  const USPSIntegration = require('../utils/uspsIntegration');
   const ConsumerLawDeadlines = require('../utils/consumerLawDeadlines');
-  
+
   try {
-    const usps = new USPSIntegration();
     const msg = message.toLowerCase();
-    
-    // Extract tracking number if present
-    const trackingMatch = message.match(/\b[A-Z0-9]{10,}\b/);
-    
-    if (trackingMatch) {
-      const trackingNumber = trackingMatch[0];
-      console.log(`Tracking certified mail: ${trackingNumber}`);
-      
-      // Get real tracking info from USPS
-      const trackingInfo = await usps.trackPackage(trackingNumber);
-      
-      let response = `📦 **Tracking ${trackingNumber}**\n\n`;
-      
-      if (trackingInfo.error) {
-        response += `I couldn't get live tracking data right now, but here's what you can do:\n\n`;
-        response += `🔗 **Check Status**: ${trackingInfo.fallback}\n\n`;
-        response += trackingInfo.advice || "";
-      } else {
-        response += `**Status**: ${trackingInfo.status}\n`;
-        if (trackingInfo.deliveryDate) {
-          response += `**Delivered**: ${trackingInfo.deliveryDate}\n\n`;
-          
-          // Calculate legal deadlines based on delivery
-          if (msg.includes('fdcpa') || msg.includes('debt') || msg.includes('validation')) {
-            const deadlines = ConsumerLawDeadlines.calculateFDCPADeadlines(trackingInfo.deliveryDate, true);
-            response += `⚖️ **FDCPA Deadlines** (based on delivery date):\n`;
-            response += `• Your validation request deadline: **${deadlines.consumerValidationDeadline}**\n`;
-            response += `• Collection must cease by: **${deadlines.collectionCeaseDate}**\n\n`;
-            response += deadlines.advice;
-          } else if (msg.includes('fcra') || msg.includes('credit') || msg.includes('dispute')) {
-            const deadlines = ConsumerLawDeadlines.calculateFCRADeadlines(trackingInfo.deliveryDate, 'certified');
-            response += `⚖️ **FCRA Deadlines** (based on delivery date):\n`;
-            response += `• Credit bureau must respond by: **${deadlines.investigationDeadline}**\n`;
-            response += `• Results must be provided by: **${deadlines.resultsDeadline}**\n\n`;
-            response += deadlines.advice;
-          }
-        } else {
-          response += `**Latest Update**: ${trackingInfo.events?.[0]?.status || 'In transit'}\n\n`;
-        }
-        
-        response += trackingInfo.legalAdvice + "\n\n";
-        response += `💡 **Next Steps**: ${trackingInfo.nextSteps}`;
-      }
-      
+
+    // Handle questions about mailing dispute letters
+    if (msg.includes('should i send') || msg.includes('how to send') || msg.includes('certified mail') ||
+        msg.includes('mail letter') || msg.includes('send dispute')) {
+
+      let response = `📬 **Dispute Letter Mailing Guide**\n\n`;
+      response += `For maximum legal protection, always send dispute letters via **Certified Mail with Return Receipt**:\n\n`;
+      response += `✅ **Required for FCRA Disputes** (15 U.S.C. § 1681i)\n`;
+      response += `✅ **Required for FDCPA Validation** (15 U.S.C. § 1692g)\n\n`;
+      response += `**Why Certified Mail?**\n`;
+      response += `• Provides proof of mailing date\n`;
+      response += `• Proves delivery (green card returned)\n`;
+      response += `• Required for legal disputes\n`;
+      response += `• Courts accept as evidence\n\n`;
+      response += `**Timeline Tracking**: Once you mail your letter, I can help you calculate all legal deadlines and response times.`;
+
       return {
         messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
       };
     }
-    
-    // Handle questions about mailing strategies
-    if (msg.includes('should i send') || msg.includes('how to send') || msg.includes('certified mail')) {
+
+    // Handle timeline calculations based on user input
+    if (msg.includes('mailed') || msg.includes('sent') || msg.includes('when did') ||
+        msg.includes('timeline') || msg.includes('deadline') || msg.includes('days left')) {
+
+      // Try to extract dates from the message
+      const dateMatch = message.match(/(\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|\d{2,4}[-\/]\d{1,2}[-\/]\d{1,2})/);
+      const today = new Date();
+
+      if (dateMatch) {
+        const mailingDate = new Date(dateMatch[0]);
+        if (!isNaN(mailingDate.getTime())) {
+          let response = `📅 **Legal Timeline Calculation**\n\n`;
+          response += `Based on your mailing date: **${mailingDate.toLocaleDateString()}**\n\n`;
+
+          // Determine if it's FCRA or FDCPA based on context
+          if (msg.includes('credit') || msg.includes('fcra') || msg.includes('bureau') ||
+              msg.includes('equifax') || msg.includes('experian') || msg.includes('transunion')) {
+
+            const deadlines = ConsumerLawDeadlines.calculateFCRADeadlines(mailingDate.toISOString().split('T')[0], 'certified');
+            response += `⚖️ **FCRA Credit Dispute Deadlines**:\n\n`;
+            response += `📅 **Day 1**: Letter mailed (${mailingDate.toLocaleDateString()})\n`;
+            response += `📅 **Day 5**: Acknowledgment required (${deadlines.acknowledgmentDeadline})\n`;
+            response += `📅 **Day 30**: Investigation completed (${deadlines.investigationDeadline})\n`;
+            response += `📅 **Day 45**: Results provided (${deadlines.resultsDeadline})\n\n`;
+
+            // Calculate days remaining
+            const daysSinceMailing = Math.floor((today - mailingDate) / (1000 * 60 * 60 * 24));
+            const daysToInvestigation = 30 - daysSinceMailing;
+            const daysToResults = 45 - daysSinceMailing;
+
+            response += `⏰ **Time Remaining**:\n`;
+            if (daysToInvestigation > 0) {
+              response += `• Investigation deadline: **${daysToInvestigation} days left**\n`;
+            } else {
+              response += `• Investigation: **OVERDUE** (${Math.abs(daysToInvestigation)} days past deadline)\n`;
+            }
+            if (daysToResults > 0) {
+              response += `• Results deadline: **${daysToResults} days left**\n`;
+            } else {
+              response += `• Results: **OVERDUE** (${Math.abs(daysToResults)} days past deadline)\n`;
+            }
+
+          } else if (msg.includes('debt') || msg.includes('fdpca') || msg.includes('collection') ||
+                     msg.includes('collector') || msg.includes('validation')) {
+
+            const deadlines = ConsumerLawDeadlines.calculateFDCPADeadlines(mailingDate.toISOString().split('T')[0], true);
+            response += `⚖️ **FDCPA Debt Collection Deadlines**:\n\n`;
+            response += `📅 **Day 1**: Validation request mailed (${mailingDate.toLocaleDateString()})\n`;
+            response += `📅 **Day 5**: Acknowledgment required (${deadlines.acknowledgmentDate})\n`;
+            response += `📅 **Day 30**: Validation provided (${deadlines.validationDeadline})\n\n`;
+
+            // Calculate days remaining
+            const daysSinceMailing = Math.floor((today - mailingDate) / (1000 * 60 * 60 * 24));
+            const daysToValidation = 30 - daysSinceMailing;
+
+            response += `⏰ **Time Remaining**:\n`;
+            if (daysToValidation > 0) {
+              response += `• Validation deadline: **${daysToValidation} days left**\n`;
+            } else {
+              response += `• Validation: **OVERDUE** (${Math.abs(daysToValidation)} days past deadline)\n`;
+            }
+
+            response += `🚫 **Collection Activity**: Must cease within 5 days if validation not provided\n`;
+          }
+
+          response += `\n💡 **Important Notes**:\n`;
+          response += `• Keep your certified mail receipt and green return card\n`;
+          response += `• Document all communications and dates\n`;
+          response += `• If deadlines are missed, you may have additional legal remedies\n`;
+          response += `• Always follow up if no response received`;
+
+          return {
+            messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
+          };
+        }
+      }
+
+      // No date found, ask for mailing information
+      let response = `📅 **Dispute Timeline Tracking**\n\n`;
+      response += `To calculate your legal deadlines, I need to know:\n\n`;
+      response += `1. **When did you mail your dispute letter?** (provide the date)\n`;
+      response += `2. **Was it sent certified mail?** (required for legal disputes)\n`;
+      response += `3. **What type of dispute?** (credit report or debt collection)\n\n`;
+      response += `Example: "I mailed my credit dispute letter on 12/10/2025 via certified mail"\n\n`;
+      response += `Once you provide this information, I'll calculate all the legal response times and tell you how much time you have left.`;
+
+      return {
+        messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
+      };
+    }
+
+    // Default response for general tracking questions
+    let response = `📬 **Consumer Law Mail & Timeline Guidance**\n\n`;
+    response += `I help you understand the legal requirements and timelines for consumer disputes:\n\n`;
+    response += `**FCRA Credit Disputes**:\n`;
+    response += `• Mail via Certified Mail (required)\n`;
+    response += `• 5 days: Acknowledgment\n`;
+    response += `• 30 days: Investigation completed\n`;
+    response += `• 45 days: Results provided\n\n`;
+    response += `**FDCPA Debt Collection**:\n`;
+    response += `• Mail validation request via Certified Mail\n`;
+    response += `• 5 days: Collection activity must stop\n`;
+    response += `• 30 days: Validation provided\n\n`;
+    response += `Tell me when you mailed your letter and what type of dispute, and I'll calculate your specific deadlines and time remaining.`;
+
+    return {
+      messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
+    };
+
+  } catch (error) {
+    console.error('[TrackingAgent] Error:', error);
+    return {
+      messages: [new HumanMessage({
+        content: `I encountered an error calculating timelines. Please provide your mailing date and dispute type, and I'll help you understand the legal deadlines.`,
+        name: 'TrackingAgent'
+      })],
+    };
+  }
+}
       let disputeType = 'FDCPA_validation';
       if (msg.includes('credit') || msg.includes('fcra')) disputeType = 'FCRA_dispute';
       if (msg.includes('cease') || msg.includes('stop')) disputeType = 'cease_desist';
