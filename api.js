@@ -339,11 +339,12 @@ async function processQueue() {
 function detectAgentNeed(message) {
   const msg = message.toLowerCase();
   
-  // Document analysis triggers (high priority)
+  // Document analysis triggers (high priority) - includes access questions
   const documentTriggers = [
     'analyze', 'review', 'my report', 'credit report', 'document',
     'uploaded', 'file', 'violations', 'errors', 'fcra', 'fdcpa',
-    'dispute', 'credit bureau', 'equifax', 'experian', 'transunion'
+    'dispute', 'credit bureau', 'equifax', 'experian', 'transunion',
+    'access', 'can you access', 'upload', 'documents', 'files'
   ];
   
   // Tracking-specific triggers
@@ -366,6 +367,37 @@ function detectAgentNeed(message) {
          otherTriggers.some(trigger => msg.includes(trigger));
 }
 
+// Helper to get user's recent files for AI context
+async function getUserFilesContext(userId) {
+  if (!supabase || !userId) return '';
+  
+  try {
+    const { data, error } = await supabase
+      .from('report_analyses')
+      .select('file_name, processed_at, analysis')
+      .eq('user_id', userId)
+      .order('processed_at', { ascending: false })
+      .limit(3);
+
+    if (error || !data || data.length === 0) {
+      return 'User has no uploaded files yet.';
+    }
+
+    const filesList = data.map((file, index) => {
+      const violations = file.analysis?.violations?.length || 0;
+      const errors = file.analysis?.errors?.length || 0;
+      const status = file.analysis ? 'analyzed' : 'processing';
+      const date = new Date(file.processed_at).toLocaleDateString();
+      
+      return `${index + 1}. ${file.file_name} (${date}) - ${status} - ${violations} violations, ${errors} errors`;
+    }).join('\n');
+
+    return `User's recent files:\n${filesList}`;
+  } catch (error) {
+    return 'Error accessing user files.';
+  }
+}
+
 // Helper to get or create chat history
 async function getChatHistory(sessionId, userId = null) {
   if (!chatSessions.has(sessionId)) {
@@ -373,6 +405,9 @@ async function getChatHistory(sessionId, userId = null) {
       "You are ConsumerAI, a professional legal assistant specializing in consumer rights and credit law under FDCPA and FCRA regulations. " +
       "You help consumers understand their rights, dispute credit report errors, and navigate the dispute process. " +
       "You provide accurate legal information about response timelines, dispute procedures, and consumer protections. " +
+      "IMPORTANT: You CAN access and analyze uploaded credit reports and documents from users. When users ask about accessing their uploads, " +
+      "tell them you can analyze their uploaded files and guide them to say 'analyze my report' or 'review my documents'. " +
+      "You have advanced document analysis capabilities using AI agents that can detect FCRA/FDCPA violations, errors, and provide actionable dispute steps. " +
       "Be professional, accurate, and focused on helping users understand and exercise their legal rights. " +
       "When users mention mail or certified mail, explain the legal requirements and help them track their dispute timeline."
     );
@@ -408,18 +443,12 @@ async function getChatHistory(sessionId, userId = null) {
   return chatSessions.get(sessionId);
 }
 
-// Fast response for common questions
+// Fast response for common questions - only basic greetings
 function getQuickResponse(message) {
   const msg = message.toLowerCase();
   
   if (msg.includes('hello') || msg.includes('hi ') || msg.includes('hey')) {
     return 'Hello! I\'m ConsumerAI, your professional legal assistant for consumer rights and credit disputes. I specialize in FDCPA and FCRA regulations. How can I help you with your consumer rights today?';
-  }
-  if (msg.includes('what can you do') || msg.includes('what do you do')) {
-    return 'I help consumers understand and exercise their rights under consumer protection laws. I can explain dispute procedures, calculate legal timelines, analyze credit reports for violations, generate dispute letters, and provide guidance on FCRA/FDCPA compliance.';
-  }
-  if (msg.includes('how are you') || msg.includes('how do you work')) {
-    return 'I\'m ready to assist you with consumer law questions and credit disputes. I provide professional legal guidance based on FDCPA and FCRA regulations. What consumer rights issue can I help you with?';
   }
   return null;
 }
@@ -1230,6 +1259,43 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    // User files endpoint - get last 3 files
+    if (path === 'user/files') {
+      if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+      const userId = req.headers['user-id'] || req.query.userId;
+      if (!userId) return res.status(400).json({ error: 'Missing userId' });
+
+      if (!supabase) {
+        return res.status(200).json({ files: [] });
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('report_analyses')
+          .select('file_name, file_path, processed_at, analysis')
+          .eq('user_id', userId)
+          .order('processed_at', { ascending: false })
+          .limit(3);
+
+        if (error) {
+          return res.status(500).json({ error: error.message });
+        }
+
+        const files = (data || []).map(file => ({
+          name: file.file_name,
+          path: file.file_path,
+          date: file.processed_at,
+          status: file.analysis ? 'analyzed' : 'processing',
+          violations: file.analysis?.violations?.length || 0,
+          errors: file.analysis?.errors?.length || 0
+        }));
+
+        return res.status(200).json({ files });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
     // Report analysis endpoint
     if (path === 'report/analyze') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -1638,3 +1704,6 @@ module.exports = async function handler(req, res) {
       }
     }
 };
+
+// Export helper functions for use by agents
+module.exports.getUserFilesContext = getUserFilesContext;

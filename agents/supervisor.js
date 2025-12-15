@@ -516,10 +516,18 @@ ${limitedText}`
     }
   }
   
-  // Fallback to text analysis for credit-related questions
+  // Fallback to text analysis for credit-related questions with file context
   try {
+    // Get user's file context
+    const { getUserFilesContext } = require('../api');
+    const filesContext = userId ? await getUserFilesContext(userId) : 'No user ID provided.';
+    
     const analysis = await callAI([
-      new SystemMessage('You are ConsumerAI, an expert credit report analyst. The user is asking about credit reports. Explain that you CAN access and analyze uploaded credit reports using advanced AI (Mistral OCR + Google Gemini). Guide them on how to upload documents and what analysis you provide. Be encouraging and accurate - do NOT say you cannot access documents.'),
+      new SystemMessage(`You are ConsumerAI, an expert credit report analyst with full document access capabilities. You CAN access and analyze uploaded credit reports using advanced AI (Mistral OCR + Google Gemini). When users ask about document access, confidently explain your capabilities and reference their specific files.
+      
+${filesContext}
+
+Be specific about their files when responding. If they have files, mention them by name. If they don't, guide them to upload files.`),
       new HumanMessage(message)
     ]);
     return {
