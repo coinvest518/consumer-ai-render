@@ -596,8 +596,6 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
             steps: reasoningSteps
           }
         };
-
-        reasoningSteps.push('Report analysis completed successfully');
       } catch (reportError) {
         console.log('Direct report analysis failed:', reportError.message);
 
@@ -651,17 +649,6 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
             steps: reasoningSteps
           }
         };
-
-        reasoningSteps.push('Report analysis failed, using direct AI response');
-
-        // Emit thinking start for fallback
-        if (socketId && global.io) {
-          global.io.to(socketId).emit('agent-thinking-start');
-        }
-
-        var result = await processWithRateLimit(() => chatWithFallback(history));
-        var aiResponse = result.response;
-        var usedModel = result.model;
       }
     } else if (needsAgents && graph) {
       reasoningSteps.push('Agent mode activated');
@@ -759,8 +746,6 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
             steps: reasoningSteps
           }
         };
-        
-        reasoningSteps.push('Agent completed successfully');
       } catch (agentError) {
         console.log('Agent failed, falling back to direct AI:', agentError.message);
         reasoningSteps.push('Agent failed, using direct AI response');
@@ -809,10 +794,6 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
             steps: reasoningSteps
           }
         };
-
-        var result = await processWithRateLimit(() => chatWithFallback(history));
-        var aiResponse = result.response;
-        var usedModel = result.model;
       }
     } else {
       // Regular chat - direct Google AI
@@ -877,56 +858,6 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
         }
       };
     }
-    
-    const aiMessage = new AIMessage(aiResponse.content);
-    history.push(aiMessage);
-    
-    // Save messages to database
-    if (supabase && userId) {
-      try {
-        await supabase.from('chat_history').insert([
-          {
-            session_id: sessionId,
-            user_id: userId,
-            role: 'user',
-            content: message,
-            created_at: new Date().toISOString()
-          },
-          {
-            session_id: sessionId,
-            user_id: userId,
-            role: 'assistant',
-            content: stripMarkdown(aiResponse.content),
-            created_at: new Date().toISOString()
-          }
-        ]);
-      } catch (dbError) {
-        console.error('Failed to save messages to database:', dbError);
-      }
-    }
-    
-    // Cache the response for future use
-    setCachedResponse(message, aiResponse.content);
-
-    // Emit thinking complete
-    if (socketId && global.io) {
-      console.log('Emitting agent-thinking-complete to socket:', socketId);
-      global.io.to(socketId).emit('agent-thinking-complete', {
-        response: stripMarkdown(aiResponse.content)
-      });
-    }
-
-    return {
-      message: stripMarkdown(aiResponse.content),
-      sessionId,
-      messageId: `${Date.now()}-ai`,
-      created_at: new Date().toISOString(),
-      usedModel,
-      decisionTrace: {
-        usedAgent,
-        steps: reasoningSteps
-      }
-    };
   } catch (error) {
     console.error('Error processing message:', error);
     
