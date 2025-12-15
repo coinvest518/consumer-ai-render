@@ -573,11 +573,6 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
         // Import reportAgent directly
         const { reportAgent } = require('./agents/supervisor');
 
-        // Emit thinking start
-        if (socketId && global.io) {
-          global.io.to(socketId).emit('agent-thinking-start');
-        }
-
         // Call reportAgent with proper state
         const result = await reportAgent({
           messages: [{ content: message }],
@@ -1438,16 +1433,6 @@ module.exports = async function handler(req, res) {
         return res.status(500).json({ error: 'Failed to process approval' });
       }
     }
-
-  } catch (error) {
-    console.error(`[API Router] Error handling ${path}:`, error);
-    return res.status(500).json({
-      error: {
-        message: 'Internal server error',
-        details: error instanceof Error ? error.message : String(error)
-      }
-    });
-  }
 
     // File upload endpoint - associates files with authenticated users
     if (path === 'upload') {
