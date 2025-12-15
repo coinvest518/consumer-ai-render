@@ -8,25 +8,19 @@ const Stripe = require('stripe');
 // Helper function to strip markdown formatting from text
 function stripMarkdown(text) {
   if (!text) return text;
+  if (typeof text !== 'string') return String(text);
   
   return text
-    // Remove code blocks
     .replace(/```[\s\S]*?```/g, '')
-    // Remove inline code
     .replace(/`([^`]+)`/g, '$1')
-    // Remove bold/italic
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')
     .replace(/__([^_]+)__/g, '$1')
     .replace(/_([^_]+)_/g, '$1')
-    // Remove headers
     .replace(/^#+\s*/gm, '')
-    // Remove links but keep text
     .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
-    // Remove lists
     .replace(/^[\s]*[-\*\+]\s+/gm, '')
     .replace(/^[\s]*\d+\.\s+/gm, '')
-    // Clean up extra whitespace
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -825,6 +819,16 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       });
       var aiResponse = result.response;
       var usedModel = result.model;
+      
+      // Handle tool calls - extract text content
+      if (aiResponse.content && Array.isArray(aiResponse.content)) {
+        const textContent = aiResponse.content.find(c => c.type === 'text');
+        if (textContent) {
+          aiResponse = { content: textContent.text };
+        } else {
+          aiResponse = { content: 'Processing your request...' };
+        }
+      }
 
       // Emit thinking complete for direct AI
       if (socketId && global.io) {
