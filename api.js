@@ -428,11 +428,20 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     const needsAgents = useAgents === true || (useAgents !== false && detectAgentNeed(message));
     const cachedResponse = !needsAgents ? getCachedResponse(message) : null;
     if (cachedResponse) {
+      // Emit Socket.IO events for cached response
+      if (userId && global.emitToUser) {
+        global.emitToUser(userId, 'agent-thinking-start');
+        global.emitToUser(userId, 'agent-thinking-complete', {
+          response: cachedResponse
+        });
+      }
+
       return {
         message: cachedResponse,
         sessionId,
         messageId: `${Date.now()}-ai`,
         created_at: new Date().toISOString(),
+        usedModel: 'cached',
         decisionTrace: {
           usedAgent: 'cached',
           steps: ['Cached response']
