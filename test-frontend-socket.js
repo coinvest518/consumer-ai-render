@@ -44,8 +44,11 @@ socket.on('agent-step', (data) => {
 });
 
 socket.on('agent-thinking-complete', (data) => {
-  console.log('🎯 RECEIVED: agent-thinking-complete', data);
-  console.log('Response content:', data.response || data.content);
+  console.log('🎯 RECEIVED: agent-thinking-complete');
+  console.log('Full data object:', JSON.stringify(data, null, 2));
+  console.log('Response field exists:', 'response' in data);
+  console.log('Response content:', data.response || data.content || 'NO RESPONSE FIELD');
+  console.log('Data keys:', Object.keys(data));
 });
 
 socket.on('agent-thinking-error', (error) => {

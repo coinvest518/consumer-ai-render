@@ -5,6 +5,32 @@ const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/mess
 const { Mistral } = require('@mistralai/mistralai');
 const Stripe = require('stripe');
 
+// Helper function to strip markdown formatting from text
+function stripMarkdown(text) {
+  if (!text) return text;
+  
+  return text
+    // Remove code blocks
+    .replace(/```[\s\S]*?```/g, '')
+    // Remove inline code
+    .replace(/`([^`]+)`/g, '$1')
+    // Remove bold/italic
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    // Remove headers
+    .replace(/^#+\s*/gm, '')
+    // Remove links but keep text
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
+    // Remove lists
+    .replace(/^[\s]*[-\*\+]\s+/gm, '')
+    .replace(/^[\s]*\d+\.\s+/gm, '')
+    // Clean up extra whitespace
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 // Import with error handling
 let enhancedLegalSearch, graph;
 try {
@@ -429,15 +455,21 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     const cachedResponse = !needsAgents ? getCachedResponse(message) : null;
     if (cachedResponse) {
       // Emit Socket.IO events for cached response
-      if (userId && global.emitToUser) {
-        global.emitToUser(userId, 'agent-thinking-start');
-        global.emitToUser(userId, 'agent-thinking-complete', {
-          response: cachedResponse
+      console.log('Cached response found, attempting to emit events');
+      console.log('socketId:', socketId, 'global.io exists:', !!global.io);
+      if (socketId && global.io) {
+        console.log('Emitting cached response events to socket:', socketId);
+        global.io.to(socketId).emit('agent-thinking-start');
+        global.io.to(socketId).emit('agent-thinking-complete', {
+          response: stripMarkdown(cachedResponse)
         });
+        console.log('Cached events emitted');
+      } else {
+        console.log('Cannot emit cached events - socketId:', socketId, 'io:', !!global.io);
       }
 
       return {
-        message: cachedResponse,
+        message: stripMarkdown(cachedResponse),
         sessionId,
         messageId: `${Date.now()}-ai`,
         created_at: new Date().toISOString(),
@@ -520,10 +552,50 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
             timestamp: new Date().toISOString()
           });
           global.io.to(socketId).emit('agent-thinking-complete', {
+            response: stripMarkdown(aiResponse.content || 'Analysis completed'),
             sessionId: sessionId,
             timestamp: new Date().toISOString()
           });
         }
+
+        // Save report analysis to database
+        if (supabase && userId) {
+          try {
+            await supabase.from('chat_history').insert([
+              {
+                session_id: sessionId,
+                user_id: userId,
+                role: 'user',
+                content: message,
+                created_at: new Date().toISOString()
+              },
+              {
+                session_id: sessionId,
+                user_id: userId,
+                role: 'assistant',
+                content: stripMarkdown(aiResponse.content || 'Analysis completed'),
+                created_at: new Date().toISOString()
+              }
+            ]);
+          } catch (dbError) {
+            console.error('Failed to save report messages to database:', dbError);
+          }
+        }
+
+        // Cache the report response
+        setCachedResponse(message, aiResponse.content || 'Analysis completed');
+
+        return {
+          message: stripMarkdown(aiResponse.content || 'Analysis completed'),
+          sessionId,
+          messageId: `${Date.now()}-ai`,
+          created_at: new Date().toISOString(),
+          usedModel: 'report',
+          decisionTrace: {
+            usedAgent: 'report',
+            steps: reasoningSteps
+          }
+        };
 
         reasoningSteps.push('Report analysis completed successfully');
       } catch (reportError) {
@@ -538,10 +610,47 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
             timestamp: new Date().toISOString()
           });
           global.io.to(socketId).emit('agent-thinking-complete', {
+            response: 'I apologize, but I encountered an error analyzing your credit report. Please try rephrasing your question or contact support if the issue persists.',
             sessionId: sessionId,
             timestamp: new Date().toISOString()
           });
         }
+
+        // Save error response to database
+        if (supabase && userId) {
+          try {
+            await supabase.from('chat_history').insert([
+              {
+                session_id: sessionId,
+                user_id: userId,
+                role: 'user',
+                content: message,
+                created_at: new Date().toISOString()
+              },
+              {
+                session_id: sessionId,
+                user_id: userId,
+                role: 'assistant',
+                content: 'I apologize, but I encountered an error analyzing your credit report. Please try rephrasing your question or contact support if the issue persists.',
+                created_at: new Date().toISOString()
+              }
+            ]);
+          } catch (dbError) {
+            console.error('Failed to save error messages to database:', dbError);
+          }
+        }
+
+        return {
+          message: 'I apologize, but I encountered an error analyzing your credit report. Please try rephrasing your question or contact support if the issue persists.',
+          sessionId,
+          messageId: `${Date.now()}-ai`,
+          created_at: new Date().toISOString(),
+          usedModel: 'error',
+          decisionTrace: {
+            usedAgent: 'report-error',
+            steps: reasoningSteps
+          }
+        };
 
         reasoningSteps.push('Report analysis failed, using direct AI response');
 
@@ -606,10 +715,50 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
           });
           // Emit thinking complete
           global.io.to(socketId).emit('agent-thinking-complete', {
+            response: stripMarkdown(aiResponse.content),
             sessionId: sessionId,
             timestamp: new Date().toISOString()
           });
         }
+
+        // Save agent response to database
+        if (supabase && userId) {
+          try {
+            await supabase.from('chat_history').insert([
+              {
+                session_id: sessionId,
+                user_id: userId,
+                role: 'user',
+                content: message,
+                created_at: new Date().toISOString()
+              },
+              {
+                session_id: sessionId,
+                user_id: userId,
+                role: 'assistant',
+                content: stripMarkdown(aiResponse.content),
+                created_at: new Date().toISOString()
+              }
+            ]);
+          } catch (dbError) {
+            console.error('Failed to save agent messages to database:', dbError);
+          }
+        }
+
+        // Cache the agent response
+        setCachedResponse(message, aiResponse.content);
+
+        return {
+          message: stripMarkdown(aiResponse.content),
+          sessionId,
+          messageId: `${Date.now()}-ai`,
+          created_at: new Date().toISOString(),
+          usedModel,
+          decisionTrace: {
+            usedAgent,
+            steps: reasoningSteps
+          }
+        };
         
         reasoningSteps.push('Agent completed successfully');
       } catch (agentError) {
@@ -619,10 +768,47 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
         // Emit thinking complete for failed agent
         if (socketId && global.io) {
           global.io.to(socketId).emit('agent-thinking-complete', {
+            response: 'I apologize, but I encountered an error processing your request with advanced analysis. Let me provide a direct response instead.',
             sessionId: sessionId,
             timestamp: new Date().toISOString()
           });
         }
+
+        // Save error response to database
+        if (supabase && userId) {
+          try {
+            await supabase.from('chat_history').insert([
+              {
+                session_id: sessionId,
+                user_id: userId,
+                role: 'user',
+                content: message,
+                created_at: new Date().toISOString()
+              },
+              {
+                session_id: sessionId,
+                user_id: userId,
+                role: 'assistant',
+                content: 'I apologize, but I encountered an error processing your request with advanced analysis. Let me provide a direct response instead.',
+                created_at: new Date().toISOString()
+              }
+            ]);
+          } catch (dbError) {
+            console.error('Failed to save error messages to database:', dbError);
+          }
+        }
+
+        return {
+          message: 'I apologize, but I encountered an error processing your request with advanced analysis. Let me provide a direct response instead.',
+          sessionId,
+          messageId: `${Date.now()}-ai`,
+          created_at: new Date().toISOString(),
+          usedModel: 'error',
+          decisionTrace: {
+            usedAgent: 'error',
+            steps: reasoningSteps
+          }
+        };
 
         var result = await processWithRateLimit(() => chatWithFallback(history));
         var aiResponse = result.response;
@@ -630,6 +816,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       }
     } else {
       // Regular chat - direct Google AI
+      console.log('Taking direct AI path for message:', message);
       reasoningSteps.push('Direct AI response');
 
       // Emit thinking start for direct AI
@@ -644,10 +831,51 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       // Emit thinking complete for direct AI
       if (socketId && global.io) {
         global.io.to(socketId).emit('agent-thinking-complete', {
+          response: stripMarkdown(aiResponse.content),
           sessionId: sessionId,
           timestamp: new Date().toISOString()
         });
       }
+
+      // Save to database for direct AI
+      if (supabase && userId) {
+        try {
+          await supabase.from('chat_history').insert([
+            {
+              session_id: sessionId,
+              user_id: userId,
+              role: 'user',
+              content: message,
+              created_at: new Date().toISOString()
+            },
+            {
+              session_id: sessionId,
+              user_id: userId,
+              role: 'assistant',
+              content: stripMarkdown(aiResponse.content),
+              created_at: new Date().toISOString()
+            }
+          ]);
+        } catch (dbError) {
+          console.error('Failed to save messages to database:', dbError);
+        }
+      }
+
+      // Cache the response for direct AI
+      setCachedResponse(message, aiResponse.content);
+
+      console.log('Direct AI path returning early');
+      return {
+        message: stripMarkdown(aiResponse.content),
+        sessionId,
+        messageId: `${Date.now()}-ai`,
+        created_at: new Date().toISOString(),
+        usedModel,
+        decisionTrace: {
+          usedAgent: 'direct',
+          steps: reasoningSteps
+        }
+      };
     }
     
     const aiMessage = new AIMessage(aiResponse.content);
@@ -668,7 +896,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
             session_id: sessionId,
             user_id: userId,
             role: 'assistant',
-            content: aiResponse.content,
+            content: stripMarkdown(aiResponse.content),
             created_at: new Date().toISOString()
           }
         ]);
@@ -684,12 +912,12 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     if (socketId && global.io) {
       console.log('Emitting agent-thinking-complete to socket:', socketId);
       global.io.to(socketId).emit('agent-thinking-complete', {
-        response: aiResponse.content
+        response: stripMarkdown(aiResponse.content)
       });
     }
 
     return {
-      message: aiResponse.content,
+      message: stripMarkdown(aiResponse.content),
       sessionId,
       messageId: `${Date.now()}-ai`,
       created_at: new Date().toISOString(),
