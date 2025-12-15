@@ -102,6 +102,26 @@ if (mistralApiKey) {
   console.warn('MISTRAL_API_KEY not found in environment variables');
 }
 
+// Initialize Hugging Face Inference as third backup AI model
+let hfClient = null;
+const hfApiKey = process.env.HF_TOKEN;
+if (hfApiKey) {
+  try {
+    console.log('Initializing Hugging Face Inference client');
+    const { OpenAI } = require('openai');
+    hfClient = new OpenAI({
+      baseURL: 'https://router.huggingface.co/v1',
+      apiKey: hfApiKey,
+    });
+    console.log('Hugging Face Inference client initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize Hugging Face Inference client:', error.message);
+    hfClient = null;
+  }
+} else {
+  console.warn('HF_TOKEN not found in environment variables');
+}
+
 // Fallback chat function: Try Google first, then Mistral
 async function chatWithFallback(messages) {
   // Try Google first
@@ -155,7 +175,49 @@ async function chatWithFallback(messages) {
       return { response, model: 'mistral' };
     } catch (error) {
       console.error('Mistral backup also failed:', error.message);
-      throw new Error('Both Google Gemini and Mistral AI failed to respond');
+    }
+  }
+
+  // Third fallback to Hugging Face
+  if (hfClient) {
+    try {
+      console.log('Attempting chat with Hugging Face fallback...');
+
+      // Convert LangChain messages to OpenAI format (HF router uses OpenAI-compatible API)
+      const hfMessages = messages.map(msg => {
+        if (msg instanceof SystemMessage) {
+          return { role: 'system', content: msg.content };
+        } else if (msg instanceof HumanMessage) {
+          return { role: 'user', content: msg.content };
+        } else if (msg instanceof AIMessage) {
+          return { role: 'assistant', content: msg.content };
+        } else {
+          return { role: 'user', content: msg.content };
+        }
+      });
+
+      const hfResponse = await hfClient.chat.completions.create({
+        model: 'meta-llama/Llama-3.2-3B-Instruct',
+        messages: hfMessages,
+        temperature: 0.7,
+        max_tokens: 2048,
+        stream: false
+      });
+
+      // Convert HF response to LangChain format
+      const content = hfResponse.choices[0]?.message?.content || 'I apologize, but I encountered an error processing your request.';
+      console.log('Hugging Face fallback response successful');
+
+      const response = {
+        content: content,
+        additional_kwargs: {},
+        tool_calls: []
+      };
+
+      return { response, model: 'huggingface' };
+    } catch (error) {
+      console.error('Hugging Face fallback also failed:', error.message);
+      throw new Error('All AI models (Google Gemini, Mistral, and Hugging Face) failed to respond');
     }
   }
 
