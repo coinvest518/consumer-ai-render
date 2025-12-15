@@ -308,8 +308,13 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     let usedAgent = 'direct';
     
     // Special case: Direct report analysis bypasses supervisor graph
-    const isReportAnalysis = message.toLowerCase().includes('analyze') && 
-                            (message.toLowerCase().includes('report') || message.toLowerCase().includes('document'));
+    const isReportAnalysis = (message.toLowerCase().includes('analyze') && 
+                             (message.toLowerCase().includes('report') || 
+                              message.toLowerCase().includes('document') ||
+                              message.toLowerCase().includes('credit'))) ||
+                            message.toLowerCase().includes('my report') ||
+                            message.toLowerCase().includes('uploaded') ||
+                            (message.toLowerCase().includes('check') && message.toLowerCase().includes('report'));
     
     if (isReportAnalysis && supabase) {
       reasoningSteps.push('Direct report analysis activated');

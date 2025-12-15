@@ -501,7 +501,7 @@ ${limitedText}`
         console.log(`[ReportAgent] Document listing: No files found in credit-reports bucket for user ${userId}`);
         return {
           messages: [new HumanMessage({ 
-            content: `📁 No documents found. Upload a credit report or document for analysis.`, 
+            content: `� **Credit Report Analysis Ready**\n\nI can analyze your uploaded credit reports for FCRA/FDCPA violations, errors, and provide actionable dispute steps.\n\n**To get started:**\n1. Upload a credit report PDF using the upload button\n2. Ask me to "analyze my report" or "check for violations"\n3. I'll use advanced AI to identify issues and create dispute letters\n\n**What I can detect:**\n🚨 FCRA violations (wrong dates, missing info)\n⚠️ Data errors and inaccuracies\n✅ Actionable dispute strategies\n\nUpload a report and I'll analyze it!`, 
             name: 'ReportAgent' 
           })],
         };
@@ -519,7 +519,7 @@ ${limitedText}`
   // Fallback to text analysis for credit-related questions
   try {
     const analysis = await callAI([
-      new SystemMessage('You are a credit report analyst. Analyze the provided text for FCRA violations, errors, and provide actionable advice. Use 🚨 for violations, ⚠️ for errors, and ✅ for action items.'),
+      new SystemMessage('You are ConsumerAI, an expert credit report analyst. The user is asking about credit reports. Explain that you CAN access and analyze uploaded credit reports using advanced AI (Mistral OCR + Google Gemini). Guide them on how to upload documents and what analysis you provide. Be encouraging and accurate - do NOT say you cannot access documents.'),
       new HumanMessage(message)
     ]);
     return {

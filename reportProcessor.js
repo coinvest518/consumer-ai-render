@@ -5,8 +5,6 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const pdfParse = require('pdf-parse');
-const { createWorker } = require('tesseract.js');
-const pdfPoppler = require('pdf-poppler');
 const { Mistral } = require('@mistralai/mistralai');
 
 // Initialize Supabase client
@@ -80,7 +78,7 @@ async function extractTextFromPDF(buffer) {
       model: "mistral-ocr-latest",
       document: {
         type: "document_url",
-        document_url: dataUrl
+        documentUrl: dataUrl
       }
     });
 
@@ -120,151 +118,18 @@ async function extractTextFromPDF(buffer) {
  * @returns {Promise<string>} - Extracted text
  */
 async function extractTextFromImage(buffer, fileName) {
-  const worker = await createWorker('eng');
-  try {
-    // Create temporary directory for processing
-    const tempDir = path.join(__dirname, 'temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
+  console.log('⚠️ Local OCR not available in deployment environment');
 
-    // Save buffer to temporary PDF file
-    const tempPdfPath = path.join(tempDir, `temp_${Date.now()}.pdf`);
-    fs.writeFileSync(tempPdfPath, buffer);
+  // Since local OCR libraries are not supported in Render,
+  // return a helpful error message instead of crashing
+  return `Unable to extract text from ${fileName}. The document appears to be image-based or scanned.
 
-    // Convert PDF to images using pdf-poppler
-    const options = {
-      format: 'png',
-      out_dir: tempDir,
-      out_prefix: path.basename(tempPdfPath, '.pdf'),
-      page: null // Convert all pages
-    };
+Please try uploading a text-based PDF or contact support for assistance with document processing.
 
-    console.log('Converting PDF to images...');
-    const result = await pdfPoppler.convert(tempPdfPath, options);
-    console.log('PDF conversion result:', result);
-
-    // Get all converted image files
-    const imageFiles = fs.readdirSync(tempDir)
-      .filter(file => file.startsWith(path.basename(tempPdfPath, '.pdf')) && file.endsWith('.png'))
-      .map(file => path.join(tempDir, file));
-
-    console.log(`Found ${imageFiles.length} image files to process`);
-
-    let extractedText = '';
-
-    // Process each image with OCR
-    for (const imagePath of imageFiles) {
-      console.log(`Processing image: ${imagePath}`);
-      const { data: { text } } = await worker.recognize(imagePath);
-      extractedText += text + '\n';
-    }
-
-    // Clean up temporary files
-    fs.unlinkSync(tempPdfPath);
-    imageFiles.forEach(file => {
-      try {
-        fs.unlinkSync(file);
-      } catch (err) {
-        console.warn(`Failed to delete temp file ${file}:`, err.message);
-      }
-    });
-
-    console.log(`Extracted ${extractedText.length} characters of text`);
-    return extractedText || 'No text could be extracted from the document';
-
-  } catch (error) {
-    console.error('Error extracting text from PDF:', error);
-    // Fallback to mock data for testing
-    console.log('Falling back to mock data due to OCR error');
-    return `CREDIT REPORT - JOHN Q. SAMPLE
-
-PERSONAL INFORMATION:
-Name: John Q. Sample
-Social Security Number: XXX-XX-1234
-Current Address: 123 Main Street, Anytown, USA 12345
-Previous Address: 456 Oak Avenue, Oldtown, USA 12346
-Date of Birth: 01/15/1985
-Employment: Software Engineer at Tech Corp
-
-CREDIT ACCOUNTS SUMMARY:
-Total Accounts: 8
-Open Accounts: 6
-Closed Accounts: 2
-Delinquent Accounts: 1
-Collections: 1
-
-DETAILED ACCOUNT INFORMATION:
-
-1. CAPITAL ONE PLATINUM CREDIT CARD
-   Account Number: ************1234
-   Account Type: Revolving Credit
-   Date Opened: 03/15/2022
-   Balance: $2,450.67
-   Credit Limit: $5,000
-   Available Credit: $2,549.33
-   Status: Current
-   Payment Status: 30 days late
-   Last Payment Date: 10/15/2024
-   Last Payment Amount: $125.00
-   Minimum Payment: $98.00
-
-2. CHASE BANK AUTO LOAN
-   Account Number: ************5678
-   Account Type: Installment Loan
-   Date Opened: 06/01/2023
-   Balance: $15,230.89
-   Original Amount: $28,000
-   Monthly Payment: $425.67
-   Status: Current
-   Term: 72 months
-   Remaining Term: 58 months
-
-3. DISCOVER BANK CASHBACK CARD
-   Account Number: ************9012
-   Account Type: Revolving Credit
-   Date Opened: 01/10/2021
-   Balance: $0.00
-   Credit Limit: $2,500
-   Status: Closed - Account paid in full
-   Date Closed: 09/30/2024
-
-NEGATIVE INFORMATION:
-
-COLLECTIONS:
-- ABC Collections Inc - Medical Bill
-  Original Creditor: City Hospital
-  Account Number: MED-2024-001
-  Balance: $127.89
-  Status: Placed for collection 08/15/2024
-
-LATE PAYMENTS:
-- Capital One account: 45 days past due (November 2024)
-- Capital One account: 30 days past due (October 2024)
-
-HARD INQUIRIES:
-- Capital One: 11/15/2024 (Pre-approved offer)
-- Chase Bank: 10/22/2024 (Auto loan application)
-- Discover: 09/18/2024 (Credit limit increase)
-
-PUBLIC RECORDS:
-- No bankruptcies found
-- No tax liens found
-- No civil judgments found
-
-CREDIT SCORES:
-- Equifax: 612 (Poor)
-- Experian: 598 (Poor)
-- TransUnion: 625 (Poor)
-
-CREDIT UTILIZATION: 49%
-ACCOUNTS WITH BALANCES: 2 of 6
-
-REPORT GENERATED: December 14, 2025
-REPORTING PERIOD: Last 7 years`;
-  } finally {
-    await worker.terminate();
-  }
+For credit report analysis, we recommend:
+1. Using digital credit reports from your credit bureau
+2. Ensuring your PDF contains selectable text (not just images)
+3. Contacting support if you need help with scanned documents`;
 }
 
 /**
