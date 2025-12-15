@@ -1214,30 +1214,63 @@ module.exports = async function handler(req, res) {
         const { validate } = require('./utils/ajvValidate');
         const { valid, errors } = validate(analysis);
 
-        // Simple HTML preview generator
+        // Simple HTML preview generator for comprehensive analysis
         const escapeHtml = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-        const fileName = analysis.file?.name || 'Unknown file';
-        const headline = analysis.summary?.headline || 'No summary provided';
-        const score = analysis.summary?.score || 'unknown';
-        const violations = Array.isArray(analysis.violations) ? analysis.violations : [];
+        const summary = analysis.summary || 'No summary provided';
+        const personalIssues = Array.isArray(analysis.personal_info_issues) ? analysis.personal_info_issues : [];
+        const accountIssues = Array.isArray(analysis.account_issues) ? analysis.account_issues : [];
+        const collectionAccounts = Array.isArray(analysis.collection_accounts) ? analysis.collection_accounts : [];
+        const fcraViolations = Array.isArray(analysis.fcra_violations) ? analysis.fcra_violations : [];
+        const overall = analysis.overall_assessment || {};
 
-        let html = `<!doctype html><html><head><meta charset="utf-8"><title>Analysis Preview</title>
-          <style>body{font-family:Arial,Helvetica,sans-serif;padding:16px}h1{font-size:18px} .badge{display:inline-block;padding:4px 8px;border-radius:12px;background:#eee;margin-left:8px}</style></head><body>`;
-        html += `<h1>Preview: ${escapeHtml(fileName)} <span class="badge">${escapeHtml(score)}</span></h1>`;
-        html += `<h2>${escapeHtml(headline)}</h2>`;
-        html += `<section><h3>Top Violations</h3>`;
-        if (violations.length === 0) html += `<p><em>No violations reported.</em></p>`;
-        html += `<ul>`;
-        for (let i = 0; i < Math.min(violations.length, 5); i++) {
-          const v = violations[i];
-          const title = v.title || v.id || 'Violation';
-          const sev = v.severity || 'unknown';
-          const rec = v.recommendation || '';
-          html += `<li><strong>${escapeHtml(title)}</strong> <span class="badge">${escapeHtml(sev)}</span><div>${escapeHtml(rec)}</div></li>`;
+        let html = `<!doctype html><html><head><meta charset="utf-8"><title>Credit Report Analysis Preview</title>
+          <style>body{font-family:Arial,Helvetica,sans-serif;padding:16px;max-width:800px;margin:0 auto} h1{font-size:24px;margin-bottom:8px} h2{font-size:18px;margin-top:24px} h3{font-size:16px;margin-top:16px} .badge{display:inline-block;padding:4px 8px;border-radius:12px;background:#eee;margin-left:8px} .high{background:#fee} .medium{background:#ffd} .low{background:#efe} .section{margin-bottom:24px} .item{margin-bottom:12px;padding:8px;border-left:4px solid #ccc} .evidence{font-style:italic;color:#666;margin-top:4px} ul{list-style:none;padding:0} li{margin-bottom:8px}</style></head><body>`;
+
+        html += `<h1>Credit Report Analysis Preview</h1>`;
+        html += `<div class="section"><h2>Summary</h2><p>${escapeHtml(summary)}</p></div>`;
+
+        if (personalIssues.length > 0) {
+          html += `<div class="section"><h2>Personal Information Issues</h2><ul>`;
+          personalIssues.slice(0, 5).forEach(issue => {
+            html += `<li class="item ${issue.severity || 'low'}"><strong>${escapeHtml(issue.type || 'Issue')}</strong> <span class="badge">${escapeHtml(issue.severity || 'unknown')}</span><div>${escapeHtml(issue.description || '')}</div><div class="evidence">${escapeHtml(issue.evidence || '')}</div></li>`;
+          });
+          html += `</ul></div>`;
         }
-        html += `</ul></section>`;
-        html += `<footer><small>Valid: ${valid}</small></footer>`;
+
+        if (accountIssues.length > 0) {
+          html += `<div class="section"><h2>Account Issues</h2><ul>`;
+          accountIssues.slice(0, 10).forEach(issue => {
+            html += `<li class="item ${issue.severity || 'low'}"><strong>${escapeHtml(issue.account_name || 'Unknown Account')}</strong> <span class="badge">${escapeHtml(issue.severity || 'unknown')}</span><div>${escapeHtml(issue.description || '')}</div><div class="evidence">${escapeHtml(issue.evidence || '')}</div></li>`;
+          });
+          html += `</ul></div>`;
+        }
+
+        if (collectionAccounts.length > 0) {
+          html += `<div class="section"><h2>Collection Accounts</h2><ul>`;
+          collectionAccounts.slice(0, 5).forEach(acc => {
+            html += `<li class="item"><strong>${escapeHtml(acc.collection_agency || 'Unknown Agency')}</strong><div>Original Creditor: ${escapeHtml(acc.creditor_name || '')}</div><div>Balance: ${escapeHtml(acc.current_balance || '')}</div></li>`;
+          });
+          html += `</ul></div>`;
+        }
+
+        if (fcraViolations.length > 0) {
+          html += `<div class="section"><h2>FCRA Violations</h2><ul>`;
+          fcraViolations.slice(0, 5).forEach(v => {
+            html += `<li class="item ${v.severity || 'low'}"><strong>${escapeHtml(v.violation_type || 'Violation')}</strong> <span class="badge">${escapeHtml(v.severity || 'unknown')}</span><div>${escapeHtml(v.description || '')}</div><div class="evidence">${escapeHtml(v.evidence || '')}</div></li>`;
+          });
+          html += `</ul></div>`;
+        }
+
+        if (overall.priority_actions) {
+          html += `<div class="section"><h2>Priority Actions</h2><ul>`;
+          (overall.priority_actions || []).slice(0, 5).forEach(action => {
+            html += `<li>${escapeHtml(action)}</li>`;
+          });
+          html += `</ul></div>`;
+        }
+
+        html += `<footer><small>Validation: ${valid ? '✅ Valid' : '❌ Invalid'} | Risk Level: ${escapeHtml(overall.overall_risk_level || 'unknown')}</small></footer>`;
         html += `</body></html>`;
 
         return res.status(200).json({ valid, errors, html });

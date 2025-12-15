@@ -1,60 +1,128 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Credit Report Analysis",
+  "title": "Comprehensive Credit Report Analysis",
   "type": "object",
-  "required": ["file", "summary", "violations", "errors", "actions", "meta"],
+  "required": ["summary", "personal_info_issues", "account_issues", "collection_accounts", "inquiries", "fcra_violations", "overall_assessment", "dispute_letters_needed"],
   "properties": {
-    "file": {
-      "type": "object",
-      "required": ["name", "id", "processedAt"],
-      "properties": {
-        "name": { "type": "string" },
-        "id": { "type": "string" },
-        "processedAt": { "type": "string", "format": "date-time" }
-      }
-    },
     "summary": {
-      "type": "object",
-      "required": ["headline", "score"],
-      "properties": {
-        "headline": { "type": "string" },
-        "score": { "type": "string" },
-        "highlights": { "type": "array", "items": { "type": "string" } }
-      }
+      "type": "string",
+      "description": "Brief headline summary of the credit report status and key findings"
     },
-    "violations": {
+    "personal_info_issues": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "title", "severity", "recommendation"],
+        "required": ["type", "description", "evidence", "severity"],
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": "string" },
-          "severity": { "type": "string", "enum": ["high", "medium", "low"] },
-          "accounts": {
-            "type": "array",
-            "items": { "type": "object", "properties": { "name": { "type": "string" }, "acct": { "type": "string" }, "quote": { "type": "string" } }, "required": ["name"] }
-          },
-          "recommendation": { "type": "string" },
-          "evidence": { "type": "array", "items": { "type": "string" } },
-          "tags": { "type": "array", "items": { "type": "string" } }
+          "type": { "type": "string", "enum": ["name_variation", "address_inaccuracy", "ssn_issue", "dob_issue", "employment_issue"] },
+          "description": { "type": "string" },
+          "current_info": { "type": "string" },
+          "correct_info": { "type": "string" },
+          "evidence": { "type": "string" },
+          "impact": { "type": "string" },
+          "severity": { "type": "string", "enum": ["high", "medium", "low"] }
         }
       }
     },
-    "errors": {
+    "account_issues": {
       "type": "array",
-      "items": { "type": "object", "required": ["id", "type", "account"], "properties": { "id": { "type": "string" }, "type": { "type": "string" }, "account": { "type": "string" }, "severity": { "type": "string" }, "quote": { "type": "string" } } }
+      "items": {
+        "type": "object",
+        "required": ["account_name", "issue_type", "description", "evidence", "severity"],
+        "properties": {
+          "account_name": { "type": "string" },
+          "account_number": { "type": "string" },
+          "account_type": { "type": "string" },
+          "status": { "type": "string" },
+          "balance": { "type": "string" },
+          "issue_type": { "type": "string", "enum": ["inaccurate_balance", "wrong_status", "not_my_account", "paid_but_shows_unpaid", "duplicate", "outdated"] },
+          "description": { "type": "string" },
+          "evidence": { "type": "string" },
+          "severity": { "type": "string", "enum": ["high", "medium", "low"] },
+          "recommendation": { "type": "string" }
+        }
+      }
     },
-    "actions": {
+    "collection_accounts": {
       "type": "array",
-      "items": { "type": "object", "required": ["id", "type", "label"], "properties": { "id": { "type": "string" }, "type": { "type": "string" }, "label": { "type": "string" }, "target": { "type": "array", "items": { "type": "string" } }, "confidence": { "type": "number" } } }
+      "items": {
+        "type": "object",
+        "required": ["creditor_name", "collection_agency"],
+        "properties": {
+          "creditor_name": { "type": "string" },
+          "collection_agency": { "type": "string" },
+          "account_number": { "type": "string" },
+          "original_balance": { "type": "string" },
+          "current_balance": { "type": "string" },
+          "fdpca_violations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["violation", "evidence", "severity"],
+              "properties": {
+                "violation": { "type": "string" },
+                "evidence": { "type": "string" },
+                "severity": { "type": "string", "enum": ["high", "medium", "low"] }
+              }
+            }
+          },
+          "recommendation": { "type": "string" }
+        }
+      }
     },
-    "meta": {
+    "inquiries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["creditor_name", "date"],
+        "properties": {
+          "creditor_name": { "type": "string" },
+          "date": { "type": "string" },
+          "purpose": { "type": "string" },
+          "issue": { "type": "string" },
+          "evidence": { "type": "string" }
+        }
+      }
+    },
+    "fcra_violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["violation_type", "description", "evidence", "severity"],
+        "properties": {
+          "violation_type": { "type": "string" },
+          "description": { "type": "string" },
+          "affected_accounts": { "type": "array", "items": { "type": "string" } },
+          "evidence": { "type": "string" },
+          "cra_responsible": { "type": "string" },
+          "severity": { "type": "string", "enum": ["high", "medium", "low"] },
+          "dispute_strategy": { "type": "string" }
+        }
+      }
+    },
+    "overall_assessment": {
       "type": "object",
+      "required": ["credit_score_impact", "total_accounts_affected", "total_violations_found", "overall_risk_level", "priority_actions"],
       "properties": {
-        "pages": { "type": "integer" },
-        "extractedChars": { "type": "integer" },
-        "model": { "type": "string" }
+        "credit_score_impact": { "type": "string", "enum": ["high", "medium", "low"] },
+        "total_accounts_affected": { "type": "integer" },
+        "total_violations_found": { "type": "integer" },
+        "overall_risk_level": { "type": "string", "enum": ["clean", "minor_issues", "significant_issues", "serious_violations"] },
+        "priority_actions": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "dispute_letters_needed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "target"],
+        "properties": {
+          "type": { "type": "string", "enum": ["account_investigation", "personal_info_correction", "fcra_violation", "fdpca_complaint"] },
+          "target": { "type": "string" },
+          "accounts_involved": { "type": "array", "items": { "type": "string" } },
+          "evidence_needed": { "type": "array", "items": { "type": "string" } },
+          "timeline": { "type": "string" }
+        }
       }
     }
   }

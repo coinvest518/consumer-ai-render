@@ -356,87 +356,43 @@ async function reportAgent(state) {
           filePath = `${userId}/${latestFile.name}`;
         }
         
-        // Process the document
-        const { processCreditReport, extractText, downloadFromStorage } = require('../reportProcessor');
+        // Process the document using the centralized processor
+        const { processCreditReport } = require('../reportProcessor');
         
-        // Try to download from the bucket where we found the file first
-        let buffer;
-        try {
-          const { data, error } = await supabase.storage
-            .from(latestBucket)
-            .download(filePath);
-          
-          if (!error && data) {
-            buffer = Buffer.from(await data.arrayBuffer());
-          } else {
-            // Fallback to downloadFromStorage which tries all buckets
-            buffer = await downloadFromStorage(filePath);
-          }
-        } catch (downloadError) {
-          console.log(`Direct download from ${latestBucket} failed, trying fallback:`, downloadError.message);
-          buffer = await downloadFromStorage(filePath);
+        const result = await processCreditReport(filePath);
+        
+        if (result.error) {
+          throw new Error(`Processing failed: ${result.error}`);
         }
         
-        const extractedText = await extractText(buffer, latestFile.name);
-        console.log(`[ReportAgent] Extracted text length: ${extractedText.length} characters`);
+        const analysis = result.analysis;
+        console.log(`[ReportAgent] Analysis completed using model: ${analysis.meta?.model || 'unknown'}`);
         
-        // OPTIMIZED: Use text extraction but limit to reasonable size for API quota
-        console.log(`[ReportAgent] Using optimized text-based analysis to avoid quota limits`);
-        
-        // Limit text to first 50,000 characters to stay within API limits
-        const limitedText = extractedText.length > 50000 ? 
-          extractedText.substring(0, 50000) + '\n\n[Text truncated for analysis...]' : 
-          extractedText;
-        
-        // Use fallback chat function instead of direct Google call
-        const analysisPrompt = `You are an expert credit report analyst. Analyze this credit report text and return ONLY a JSON object matching the required analysis schema. Do NOT include any explanatory text.
-
-      Required top-level keys: file, summary, violations, errors, actions, meta.
-
-      Each violation should include: id, title, severity (high|medium|low), accounts (name, acct, quote), recommendation, evidence (array of quotes), tags.
-
-      Each error should include: id, type, account, severity, quote.
-
-      Each action should include: id, type (generate_dispute|review|notify), label, target (array of account names), confidence (0-1).
-
-      Provide exact evidence quotes from the document where possible. Keep textual fields concise (summary headline <=200 chars). Use ISO8601 timestamps in file.processedAt if provided.
-
-      CREDIT REPORT TEXT:
-      ${limitedText}`;
-        
-        const messages = [
-          new SystemMessage('You are an expert credit report analyst specializing in FCRA and FDCPA compliance.'),
-          new HumanMessage(analysisPrompt)
-        ];
-        
-        const { response: detailedAnalysis, model: usedModel } = await chatWithFallback(messages);
-        console.log(`[ReportAgent] Analysis completed using model: ${usedModel}`);
-        
-        // Store analysis in database
-        const analysisText = detailedAnalysis.content;
-        const analysisResult = {
-          summary: analysisText.substring(0, 200) + '...',
-          detailed_analysis: analysisText,
-          violations_found: analysisText.includes('🚨'),
-          errors_found: analysisText.includes('⚠️'),
-          file_name: latestFile.name,
-          extracted_text: extractedText.substring(0, 1000) + '...'
-        };
-        
-        await supabase.from('report_analyses').insert({
-          user_id: userId,
-          file_path: filePath,
-          bucket: latestBucket,
-          analysis: analysisResult,
-          processed_at: new Date().toISOString()
-        });
-        
-        return {
+        // Return the full analysis immediately
+        const response = {
           messages: [new HumanMessage({ 
-            content: `📄 **Analysis of ${latestFile.name}**\n\n${analysisText}\n\n---\n*Analysis saved to your account for future reference.*`, 
+            content: JSON.stringify(analysis), 
             name: 'ReportAgent' 
           })],
         };
+        
+        // Save analysis to database asynchronously (don't wait)
+        supabase.from('report_analyses').insert({
+          user_id: userId,
+          file_path: filePath,
+          bucket: latestBucket,
+          analysis: {
+            summary: analysis.summary?.headline || analysis.summary || 'Analysis completed',
+            detailed_analysis: JSON.stringify(analysis),
+            violations_found: (analysis.violations?.length || 0) > 0,
+            errors_found: (analysis.errors?.length || 0) > 0,
+            file_name: latestFile.name,
+            extracted_text: result.extractedText?.substring(0, 1000) + '...' || ''
+          },
+          processed_at: new Date().toISOString()
+        }).catch(saveError => console.error('[ReportAgent] Failed to save analysis:', saveError));
+        
+        return response;
       }
     } catch (error) {
       console.error('[ReportAgent] Auto-analysis error:', error);

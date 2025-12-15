@@ -176,36 +176,116 @@ async function analyzeText(text) {
     };
   }
 
-  const systemPrompt = `You are a legal analysis AI that ONLY returns valid JSON. No explanations, no apologies, no conversational text.
+  // Truncate text to fit within AI token limits (approx 100k characters for 128k tokens)
+  const maxLength = 80000;
+  const truncatedText = text.length > maxLength ? 
+    text.substring(0, maxLength) + '\n\n[Text truncated for analysis due to length...]' : 
+    text;
+  
+  console.log(`Analyzing text of length: ${truncatedText.length} characters (original: ${text.length})`);
 
-Analyze the credit report text and return ONLY a JSON object with this EXACT structure:
+  const systemPrompt = `You are an expert credit report analyst specializing in FCRA and FDCPA compliance. ONLY return valid JSON. No explanations, no apologies, no conversational text.
+
+Analyze the ENTIRE credit report text and return ONLY a JSON object with this EXACT structure:
+
 {
-  "summary": "Brief summary of findings (max 200 chars)",
-  "violations": [
+  "summary": "Brief headline summary of the credit report status and key findings (max 300 chars)",
+  "personal_info_issues": [
     {
-      "type": "FCRA or FDCPA",
-      "description": "Brief description",
+      "type": "name_variation|address_inaccuracy|ssn_issue|dob_issue|employment_issue",
+      "description": "Specific personal information error or inaccuracy",
+      "current_info": "What's currently reported",
+      "correct_info": "What should be correct (if known from context)",
+      "evidence": "Exact quote from report",
+      "impact": "Why this matters for consumer tracking and identity verification",
+      "severity": "high/medium/low"
+    }
+  ],
+  "account_issues": [
+    {
+      "account_name": "Exact creditor/company name from report",
+      "account_number": "Account number if visible",
+      "account_type": "Credit card, loan, collection, etc.",
+      "status": "Current, charged-off, collection, etc.",
+      "balance": "Current balance if shown",
+      "issue_type": "inaccurate_balance|wrong_status|not_my_account|paid_but_shows_unpaid|duplicate|outdated",
+      "description": "Detailed description of the issue",
+      "evidence": "Exact quote from report showing the issue",
       "severity": "high/medium/low",
-      "evidence": "Quote from text",
-      "recommendation": "Action needed"
+      "recommendation": "Specific dispute action needed"
     }
   ],
-  "errors": [
+  "collection_accounts": [
     {
-      "type": "personal_info/account_info/inquiry/etc",
-      "description": "Error description",
-      "evidence": "Quote from text"
+      "creditor_name": "Original creditor name",
+      "collection_agency": "Collection agency name and contact info if available",
+      "account_number": "Account number",
+      "original_balance": "Original amount",
+      "current_balance": "Current balance",
+      "fdpca_violations": [
+        {
+          "violation": "Specific FDCPA violation (e.g., time-barred debt, improper communication)",
+          "evidence": "Quote showing violation",
+          "severity": "high/medium/low"
+        }
+      ],
+      "recommendation": "Action to take regarding this collection"
     }
   ],
-  "overall_score": "clean/minor_issues/significant_issues/serious_violations"
+  "inquiries": [
+    {
+      "creditor_name": "Who made the inquiry",
+      "date": "Date of inquiry",
+      "purpose": "Purpose if stated",
+      "issue": "Potential issue (too many, unauthorized, etc.)",
+      "evidence": "Quote from report"
+    }
+  ],
+  "fcra_violations": [
+    {
+      "violation_type": "inaccurate_reporting|outdated_info|unverified_info|mixed_files|etc",
+      "description": "Detailed violation description",
+      "affected_accounts": ["List of affected account names"],
+      "evidence": "Exact quotes from report",
+      "cra_responsible": "Equifax/Experian/TransUnion if identifiable",
+      "severity": "high/medium/low",
+      "dispute_strategy": "How to dispute this violation"
+    }
+  ],
+  "overall_assessment": {
+    "credit_score_impact": "high/medium/low negative impact",
+    "total_accounts_affected": 0,
+    "total_violations_found": 0,
+    "overall_risk_level": "clean/minor_issues/significant_issues/serious_violations",
+    "priority_actions": ["List of top 3 actions to take"]
+  },
+  "dispute_letters_needed": [
+    {
+      "type": "account_investigation|personal_info_correction|fcra_violation|fdpca_complaint",
+      "target": "CRA name or creditor name",
+      "accounts_involved": ["Account names"],
+      "evidence_needed": ["What evidence to include"],
+      "timeline": "How long to wait for response"
+    }
+  ]
 }
 
-IMPORTANT: Return ONLY the JSON object, no other text or formatting.`;
+CRITICAL REQUIREMENTS:
+- Extract EVERY account name, number, creditor, balance, status from the text
+- Look for multiple addresses, names, SSNs - these are major identity issues
+- Identify all collection agencies and their contact information
+- Find all hard/soft inquiries and assess if excessive
+- Check for FCRA violations like outdated negative items (>7 years old)
+- Check FDCPA compliance for collection accounts
+- Include exact quotes as evidence for every finding
+- Be extremely thorough - analyze every line of the credit report
+- Sort issues by severity and impact
+- Return ONLY the JSON object`;
 
   try {
     const { response } = await chatWithFallback([
       new SystemMessage(systemPrompt),
-      new HumanMessage(`Analyze this credit report text:\n\n${text}`)
+      new HumanMessage(`Analyze this credit report text:\n\n${truncatedText}`)
     ]);
 
     // Parse the JSON response
@@ -244,20 +324,39 @@ IMPORTANT: Return ONLY the JSON object, no other text or formatting.`;
 
     // Fallback: return a structured response wrapping raw AI output
     return {
-      summary: { headline: analysisText.substring(0, 200), score: 'unknown' },
-      violations: [],
-      errors: [],
-      actions: [],
-      meta: { model: 'unknown' },
+      summary: analysisText.substring(0, 300) || "Analysis completed but parsing failed",
+      personal_info_issues: [],
+      account_issues: [],
+      collection_accounts: [],
+      inquiries: [],
+      fcra_violations: [],
+      overall_assessment: {
+        credit_score_impact: "unknown",
+        total_accounts_affected: 0,
+        total_violations_found: 0,
+        overall_risk_level: "unknown",
+        priority_actions: ["Review raw analysis manually"]
+      },
+      dispute_letters_needed: [],
       raw_response: analysisText
     };
   } catch (error) {
     console.error('Error analyzing text:', error);
     return {
-      summary: "Analysis failed",
-      violations: [],
-      errors: [],
-      overall_score: "unknown",
+      summary: "Analysis failed due to technical error",
+      personal_info_issues: [],
+      account_issues: [],
+      collection_accounts: [],
+      inquiries: [],
+      fcra_violations: [],
+      overall_assessment: {
+        credit_score_impact: "unknown",
+        total_accounts_affected: 0,
+        total_violations_found: 0,
+        overall_risk_level: "unknown",
+        priority_actions: ["Contact support for analysis assistance"]
+      },
+      dispute_letters_needed: [],
       error: error.message
     };
   }
