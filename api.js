@@ -2,6 +2,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
 const { ChatGoogle } = require('@langchain/google-gauth');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
+const { Mistral } = require('@mistralai/mistralai');
 const Stripe = require('stripe');
 
 // Import with error handling
@@ -83,7 +84,84 @@ if (googleApiKey) {
   console.warn('GOOGLE_API_KEY not found in environment variables');
 }
 
-// No backup model - Using Gemini 2.5 Flash as primary
+// Initialize Mistral as backup AI model
+let mistralClient = null;
+const mistralApiKey = process.env.MISTRAL_API_KEY;
+if (mistralApiKey) {
+  try {
+    console.log('Initializing Mistral AI client');
+    mistralClient = new Mistral({
+      apiKey: mistralApiKey,
+    });
+    console.log('Mistral AI client initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize Mistral AI client:', error.message);
+    mistralClient = null;
+  }
+} else {
+  console.warn('MISTRAL_API_KEY not found in environment variables');
+}
+
+// Fallback chat function: Try Google first, then Mistral
+async function chatWithFallback(messages) {
+  // Try Google first
+  if (chatModel) {
+    try {
+      console.log('Attempting chat with Google Gemini...');
+      const response = await chatModel.invoke(messages);
+      console.log('Google Gemini response successful');
+      return { response, model: 'google-gemini' };
+    } catch (error) {
+      console.warn('Google Gemini failed, trying Mistral backup:', error.message);
+    }
+  }
+
+  // Fallback to Mistral
+  if (mistralClient) {
+    try {
+      console.log('Attempting chat with Mistral backup...');
+
+      // Convert LangChain messages to Mistral format
+      const mistralMessages = messages.map(msg => {
+        if (msg instanceof SystemMessage) {
+          return { role: 'system', content: msg.content };
+        } else if (msg instanceof HumanMessage) {
+          return { role: 'user', content: msg.content };
+        } else if (msg instanceof AIMessage) {
+          return { role: 'assistant', content: msg.content };
+        } else {
+          return { role: 'user', content: msg.content };
+        }
+      });
+
+      const mistralResponse = await mistralClient.chat.complete({
+        model: 'mistral-small-latest',
+        messages: mistralMessages,
+        temperature: 0.7,
+        max_tokens: 2048,
+        stream: false
+      });
+
+      // Convert Mistral response to LangChain format
+      const content = mistralResponse.choices[0]?.message?.content || 'I apologize, but I encountered an error processing your request.';
+      console.log('Mistral backup response successful');
+
+      const response = {
+        content: content,
+        additional_kwargs: {},
+        tool_calls: []
+      };
+
+      return { response, model: 'mistral' };
+    } catch (error) {
+      console.error('Mistral backup also failed:', error.message);
+      throw new Error('Both Google Gemini and Mistral AI failed to respond');
+    }
+  }
+
+  // No models available
+  throw new Error('No AI models are available. Please check your API keys.');
+}
 
 // Initialize Stripe (optional)
 let stripe = null;
@@ -401,7 +479,9 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
           global.io.to(socketId).emit('agent-thinking-start');
         }
 
-        var aiResponse = await processWithRateLimit(() => chatModel.invoke(history));
+        var result = await processWithRateLimit(() => chatWithFallback(history));
+        var aiResponse = result.response;
+        var usedModel = result.model;
       }
     } else if (needsAgents && graph) {
       reasoningSteps.push('Agent mode activated');
@@ -473,7 +553,9 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
           });
         }
 
-        var aiResponse = await processWithRateLimit(() => chatModel.invoke(history));
+        var result = await processWithRateLimit(() => chatWithFallback(history));
+        var aiResponse = result.response;
+        var usedModel = result.model;
       }
     } else {
       // Regular chat - direct Google AI
@@ -484,7 +566,9 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
         global.io.to(socketId).emit('agent-thinking-start');
       }
 
-      var aiResponse = await processWithRateLimit(() => chatModel.invoke(history));
+      var result = await processWithRateLimit(() => chatWithFallback(history));
+      var aiResponse = result.response;
+      var usedModel = result.model;
 
       // Emit thinking complete for direct AI
       if (socketId && global.io) {
@@ -538,6 +622,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       sessionId,
       messageId: `${Date.now()}-ai`,
       created_at: new Date().toISOString(),
+      usedModel,
       decisionTrace: {
         usedAgent,
         steps: reasoningSteps
