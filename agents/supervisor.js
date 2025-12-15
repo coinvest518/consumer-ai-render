@@ -389,24 +389,20 @@ async function reportAgent(state) {
           extractedText;
         
         // Use fallback chat function instead of direct Google call
-        const analysisPrompt = `You are an expert credit report analyst. Analyze this credit report text and provide:
+        const analysisPrompt = `You are an expert credit report analyst. Analyze this credit report text and return ONLY a JSON object matching the required analysis schema. Do NOT include any explanatory text.
 
-1. **HIGHLIGHTED VIOLATIONS** - Mark specific FCRA/FDCPA violations with 🚨
-2. **OUTLINED ERRORS** - List errors and inaccuracies with ⚠️ 
-3. **ACTIONABLE ITEMS** - Steps the consumer should take with ✅
-4. **EVIDENCE QUOTES** - Exact text from the report with quotation marks
+      Required top-level keys: file, summary, violations, errors, actions, meta.
 
-Focus on:
-- Incorrect information
-- Outdated negative items (older than 7 years)
-- Identity theft indicators
-- FCRA compliance issues
-- Credit scoring factors
+      Each violation should include: id, title, severity (high|medium|low), accounts (name, acct, quote), recommendation, evidence (array of quotes), tags.
 
-Be specific and reference exact content from the document. Keep your analysis comprehensive but concise.
+      Each error should include: id, type, account, severity, quote.
 
-CREDIT REPORT TEXT:
-${limitedText}`;
+      Each action should include: id, type (generate_dispute|review|notify), label, target (array of account names), confidence (0-1).
+
+      Provide exact evidence quotes from the document where possible. Keep textual fields concise (summary headline <=200 chars). Use ISO8601 timestamps in file.processedAt if provided.
+
+      CREDIT REPORT TEXT:
+      ${limitedText}`;
         
         const messages = [
           new SystemMessage('You are an expert credit report analyst specializing in FCRA and FDCPA compliance.'),

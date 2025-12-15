@@ -214,31 +214,43 @@ IMPORTANT: Return ONLY the JSON object, no other text or formatting.`;
     
     // Remove markdown code blocks if present
     const jsonText = analysisText.replace(/```json\n?|\n?```/g, '').trim();
-    
+
+    let parsed = null;
     try {
-      return JSON.parse(jsonText);
+      parsed = JSON.parse(jsonText);
     } catch (parseError) {
       console.error('JSON parse error, trying to extract JSON from response');
-      
-      // Try to find JSON in the response
       const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
-          return JSON.parse(jsonMatch[0]);
+          parsed = JSON.parse(jsonMatch[0]);
         } catch (secondParseError) {
           console.error('Still cannot parse JSON');
         }
       }
-      
-      // Fallback: return a structured response
-      return {
-        summary: analysisText.substring(0, 500),
-        violations: [],
-        errors: [],
-        overall_score: "unknown",
-        raw_response: analysisText
-      };
     }
+
+    // Validate the parsed result with a lightweight validator
+    const { simpleValidate } = require('./utils/validateAnalysis');
+    if (parsed) {
+      const { valid, errors } = simpleValidate(parsed);
+      if (!valid) {
+        console.warn('Parsed analysis failed validation:', errors);
+        // Attach raw response for frontend inspection
+        parsed.raw_response = analysisText;
+      }
+      return parsed;
+    }
+
+    // Fallback: return a structured response wrapping raw AI output
+    return {
+      summary: { headline: analysisText.substring(0, 200), score: 'unknown' },
+      violations: [],
+      errors: [],
+      actions: [],
+      meta: { model: 'unknown' },
+      raw_response: analysisText
+    };
   } catch (error) {
     console.error('Error analyzing text:', error);
     return {

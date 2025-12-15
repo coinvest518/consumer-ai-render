@@ -1203,6 +1203,50 @@ module.exports = async function handler(req, res) {
       }
     }
 
+    // Preview + validation endpoint for frontend snapshots and CI
+    if (path === 'report/preview') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+      const analysis = req.body.analysis;
+      if (!analysis) return res.status(400).json({ error: 'Missing analysis JSON in body.analysis' });
+
+      try {
+        const { validate } = require('./utils/ajvValidate');
+        const { valid, errors } = validate(analysis);
+
+        // Simple HTML preview generator
+        const escapeHtml = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+        const fileName = analysis.file?.name || 'Unknown file';
+        const headline = analysis.summary?.headline || 'No summary provided';
+        const score = analysis.summary?.score || 'unknown';
+        const violations = Array.isArray(analysis.violations) ? analysis.violations : [];
+
+        let html = `<!doctype html><html><head><meta charset="utf-8"><title>Analysis Preview</title>
+          <style>body{font-family:Arial,Helvetica,sans-serif;padding:16px}h1{font-size:18px} .badge{display:inline-block;padding:4px 8px;border-radius:12px;background:#eee;margin-left:8px}</style></head><body>`;
+        html += `<h1>Preview: ${escapeHtml(fileName)} <span class="badge">${escapeHtml(score)}</span></h1>`;
+        html += `<h2>${escapeHtml(headline)}</h2>`;
+        html += `<section><h3>Top Violations</h3>`;
+        if (violations.length === 0) html += `<p><em>No violations reported.</em></p>`;
+        html += `<ul>`;
+        for (let i = 0; i < Math.min(violations.length, 5); i++) {
+          const v = violations[i];
+          const title = v.title || v.id || 'Violation';
+          const sev = v.severity || 'unknown';
+          const rec = v.recommendation || '';
+          html += `<li><strong>${escapeHtml(title)}</strong> <span class="badge">${escapeHtml(sev)}</span><div>${escapeHtml(rec)}</div></li>`;
+        }
+        html += `</ul></section>`;
+        html += `<footer><small>Valid: ${valid}</small></footer>`;
+        html += `</body></html>`;
+
+        return res.status(200).json({ valid, errors, html });
+      } catch (err) {
+        console.error('Preview endpoint error:', err);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
     // Ensure storage limits endpoint - creates defaults if missing
     if (path === 'storage/ensure') {
       const userId = req.method === 'GET' ? req.query.user_id : req.body.user_id;
