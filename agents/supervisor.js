@@ -244,17 +244,58 @@ async function reportAgent(state) {
       }
       
       // SECOND: If no recent analysis, get the most recent uploaded file
-      const { data: files, error: filesError } = await supabase.storage
-        .from('credit-reports') // Primary bucket for credit reports
-        .list(userId, { limit: 1, sortBy: { column: 'created_at', order: 'desc' } });
+      // Try multiple buckets like reportProcessor does
+      const buckets = ['users-file-storage', 'credit-reports', 'uploads', 'documents'];
+      let latestFile = null;
+      let latestBucket = null;
+      let latestTimestamp = 0;
       
-      if (files && files.length > 0) {
-        const latestFile = files[0];
+      for (const bucket of buckets) {
+        try {
+          const { data: files, error: filesError } = await supabase.storage
+            .from(bucket)
+            .list(userId, { limit: 1, sortBy: { column: 'created_at', order: 'desc' } });
+          
+          if (!filesError && files && files.length > 0) {
+            const file = files[0];
+            const fileTimestamp = new Date(file.created_at).getTime();
+            
+            // Check if this is the most recent file across all buckets
+            if (fileTimestamp > latestTimestamp) {
+              latestFile = file;
+              latestBucket = bucket;
+              latestTimestamp = fileTimestamp;
+            }
+          }
+        } catch (bucketError) {
+          console.log(`Skipping bucket ${bucket}:`, bucketError.message);
+        }
+      }
+      
+      if (latestFile) {
         const filePath = `${userId}/${latestFile.name}`;
         
         // Process the document
         const { processCreditReport, extractText, downloadFromStorage } = require('../reportProcessor');
-        const buffer = await downloadFromStorage(filePath);
+        
+        // Try to download from the bucket where we found the file first
+        let buffer;
+        try {
+          const { data, error } = await supabase.storage
+            .from(latestBucket)
+            .download(filePath);
+          
+          if (!error && data) {
+            buffer = Buffer.from(await data.arrayBuffer());
+          } else {
+            // Fallback to downloadFromStorage which tries all buckets
+            buffer = await downloadFromStorage(filePath);
+          }
+        } catch (downloadError) {
+          console.log(`Direct download from ${latestBucket} failed, trying fallback:`, downloadError.message);
+          buffer = await downloadFromStorage(filePath);
+        }
+        
         const extractedText = await extractText(buffer, latestFile.name);
         
         // Enhanced analysis with highlighting
@@ -283,6 +324,7 @@ Format your response with clear sections and highlighting.`),
         await supabase.from('report_analyses').insert({
           user_id: userId,
           file_path: filePath,
+          bucket: latestBucket,
           analysis: analysisResult,
           processed_at: new Date().toISOString()
         });

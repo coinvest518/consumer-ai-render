@@ -611,6 +611,9 @@ async function ensureDefaultStorageLimits(userId) {
 
 // Main API handler
 module.exports = async function handler(req, res) {
+  // Store io reference for emitting events (set by server.js)
+  // global.io is set when the module is initialized
+  
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
   }
@@ -990,17 +993,32 @@ module.exports = async function handler(req, res) {
           });
         }
 
-        // Verify file exists in storage
-        const { data: fileData, error: fileError } = await supabase.storage
-          .from('credit-reports')
-          .list(userId, { limit: 1000 });
+        // Verify file exists in storage - check multiple buckets
+        const buckets = ['users-file-storage', 'credit-reports', 'uploads', 'documents'];
+        let fileExists = false;
+        let fileInfo = null;
+        let foundBucket = null;
 
-        if (fileError) {
-          console.error('Error listing user files:', fileError);
-          return res.status(500).json({ error: 'Failed to verify file upload' });
+        for (const bucket of buckets) {
+          try {
+            const { data: fileData, error: fileError } = await supabase.storage
+              .from(bucket)
+              .list(userId, { limit: 1000 });
+
+            if (!fileError && fileData) {
+              const foundFile = fileData.find(file => file.name === fileName);
+              if (foundFile) {
+                fileExists = true;
+                fileInfo = foundFile;
+                foundBucket = bucket;
+                break;
+              }
+            }
+          } catch (bucketError) {
+            console.log(`Skipping bucket ${bucket} during verification:`, bucketError.message);
+          }
         }
 
-        const fileExists = fileData.some(file => file.name === fileName);
         if (!fileExists) {
           return res.status(404).json({
             error: 'File not found',
@@ -1009,7 +1027,6 @@ module.exports = async function handler(req, res) {
         }
 
         // Update storage usage
-        const fileInfo = fileData.find(file => file.name === fileName);
         const fileSize = fileInfo?.metadata?.size || 0;
 
         await supabase.from('storage_limits').update({
@@ -1021,6 +1038,15 @@ module.exports = async function handler(req, res) {
         // Trigger report processing (fire-and-forget)
         (async () => {
           try {
+            // Notify user that analysis has started
+            global.emitToUser && global.emitToUser(userId, 'analysis-started', {
+              userId,
+              filePath,
+              fileName,
+              message: 'File analysis has begun. This may take a few moments...',
+              timestamp: new Date().toISOString()
+            });
+
             const { processCreditReport } = require('./reportProcessor');
             const result = await processCreditReport(filePath);
 
@@ -1028,6 +1054,7 @@ module.exports = async function handler(req, res) {
             await supabase.from('report_analyses').insert({
               user_id: userId,
               file_path: filePath,
+              bucket: foundBucket,
               file_name: fileName,
               extracted_text: result.extractedText?.substring(0, 2000),
               analysis: result.analysis,
@@ -1036,8 +1063,26 @@ module.exports = async function handler(req, res) {
             });
 
             console.log('✅ File processed and analysis stored:', filePath);
+
+            // Notify user via Socket.IO that analysis is complete
+            global.emitToUser && global.emitToUser(userId, 'analysis-complete', {
+              userId,
+              filePath,
+              fileName,
+              analysis: result.analysis,
+              timestamp: new Date().toISOString()
+            });
           } catch (processError) {
             console.error('❌ Error processing uploaded file:', processError);
+            
+            // Notify user of analysis error
+            global.emitToUser && global.emitToUser(userId, 'analysis-error', {
+              userId,
+              filePath,
+              fileName,
+              error: processError.message,
+              timestamp: new Date().toISOString()
+            });
           }
         })();
 
@@ -1047,6 +1092,15 @@ module.exports = async function handler(req, res) {
           filePath,
           fileName,
           userId
+        });
+
+        // Notify user that upload was registered successfully
+        global.emitToUser && global.emitToUser(userId, 'upload-registered', {
+          userId,
+          filePath,
+          fileName,
+          message: 'File uploaded successfully and queued for analysis',
+          timestamp: new Date().toISOString()
         });
 
       } catch (error) {

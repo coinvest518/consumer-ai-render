@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS report_analyses (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     file_path TEXT NOT NULL,
+    bucket TEXT DEFAULT 'credit-reports',
     file_name TEXT,
     extracted_text TEXT,
     analysis JSONB,

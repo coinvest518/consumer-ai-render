@@ -110,6 +110,20 @@ app.use('/api', apiLimiter, (req, res) => {
   return apiHandler(req, res);
 });
 
+// Track connected users by userId -> socketId mapping
+const connectedUsers = new Map();
+// Helper function to emit events to specific users
+global.emitToUser = (userId, event, data) => {
+  if (global.connectedUsers && global.io) {
+    const socketId = global.connectedUsers.get(userId);
+    if (socketId) {
+      global.io.to(socketId).emit(event, data);
+      return true;
+    }
+  }
+  return false;
+};
+
 // Enhanced Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('Socket.IO client connected:', socket.id);
@@ -120,9 +134,31 @@ io.on('connection', (socket) => {
     timestamp: new Date().toISOString()
   });
   
+  // Handle user authentication/identification
+  socket.on('authenticate', (data) => {
+    const { userId } = data;
+    if (userId) {
+      connectedUsers.set(userId, socket.id);
+      socket.userId = userId;
+      console.log(`User ${userId} authenticated on socket ${socket.id}`);
+      
+      socket.emit('authenticated', {
+        userId,
+        socketId: socket.id,
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+  
   // Handle disconnection
   socket.on('disconnect', (reason) => {
     console.log('Socket.IO client disconnected:', socket.id, 'Reason:', reason);
+    
+    // Remove user from connected users map
+    if (socket.userId) {
+      connectedUsers.delete(socket.userId);
+      console.log(`User ${socket.userId} disconnected`);
+    }
   });
   
   // Handle connection errors
