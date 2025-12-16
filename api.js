@@ -281,25 +281,28 @@ async function processQueue() {
 function detectAgentNeed(message) {
   const msg = message.toLowerCase();
   
+  // Skip agent routing for simple questions
+  if (msg.match(/^(what can you do|what do you do|help|how are you|hi|hello|hey)$/i)) {
+    return false;
+  }
+  
   // Document analysis triggers (high priority) - includes access questions
   const documentTriggers = [
-    'analyze', 'review', 'my report', 'credit report', 'document',
-    'uploaded', 'file', 'violations', 'errors', 'fcra', 'fdcpa',
-    'dispute', 'credit bureau', 'equifax', 'experian', 'transunion',
-    'access', 'can you access', 'upload', 'documents', 'files',
-    'get my', 'see my', 'check my', 'look at my', 'find my',
-    'do you have', 'show me', 'pull up', 'retrieve'
+    'analyze my', 'review my', 'my report', 'my credit report', 'my document',
+    'my uploaded', 'my file', 'check my report', 'look at my report',
+    'get my report', 'see my report', 'find my report',
+    'show me my', 'pull up my', 'retrieve my'
   ];
-  // Other agent triggers
+  // Other specific agent triggers
   const otherTriggers = [
     'search for', 'find information about', 'look up',
-    'generate letter', 'create dispute letter',
+    'generate letter', 'create dispute letter', 'write a letter',
     'send email', 'email notification',
     'set reminder', 'calendar event'
   ];
   
-    return documentTriggers.some(trigger => msg.includes(trigger)) ||
-      otherTriggers.some(trigger => msg.includes(trigger));
+  return documentTriggers.some(trigger => msg.includes(trigger)) ||
+    otherTriggers.some(trigger => msg.includes(trigger));
 }
 
 // Helper to get user's recent files for AI context
@@ -355,51 +358,37 @@ async function getUserFilesContext(userId) {
 // Helper to get or create chat history
 async function getChatHistory(sessionId, userId = null) {
   if (!chatSessions.has(sessionId)) {
-    // Get user's file context for system message
-    const filesContext = userId ? await getUserFilesContext(userId) : 'No files uploaded yet.';
-    
     const systemMessage = new SystemMessage(
-      "=== CONSUMERAI SYSTEM INSTRUCTIONS ===\n\n" +
       "You are ConsumerAI, a professional legal assistant specializing in consumer rights and credit law under FDCPA and FCRA regulations.\n\n" +
-      
-      "=== YOUR CAPABILITIES ===\n" +
+      "Your capabilities include:\n" +
       "• Analyze credit reports for FCRA/FDCPA violations\n" +
       "• Detect errors, outdated items, identity theft indicators\n" +
       "• Generate dispute letters\n" +
       "• Calculate legal deadlines and timelines\n" +
       "• Provide actionable steps for disputes\n\n" +
-      
-      "=== RESPONSE RULES ===\n" +
-      "• Be professional, accurate, and helpful\n" +
-      "• Focus on actionable legal advice\n" +
-      "• Only mention files if the user asks about them"
+      "Be professional, accurate, and helpful. Focus on actionable legal advice."
     );
     
     const history = [systemMessage];
     
-    console.log('getChatHistory called for session:', sessionId, 'userId:', userId, 'supabase exists:', !!supabase);
-    // Load previous messages using Supabase (direct Postgres connection to Supabase is blocked)
+    // Load previous messages using Supabase
     if (supabase && userId) {
       try {
-        console.log('Loading chat history from Supabase for session:', sessionId, 'userId:', userId);
         const { data, error } = await supabase
           .from('chat_history')
           .select('*')
           .eq('session_id', sessionId)
           .order('created_at', { ascending: true })
-          .limit(20); // Last 20 messages
+          .limit(20);
         
         if (!error && data) {
-          console.log('Loaded', data.length, 'messages from Supabase');
           data.forEach(msg => {
             if (msg.role === 'user') {
-              history.push(new HumanMessage(msg.message)); // Use 'message' column
+              history.push(new HumanMessage(msg.message));
             } else if (msg.role === 'assistant') {
-              history.push(new AIMessage(msg.message)); // Use 'message' column
+              history.push(new AIMessage(msg.message));
             }
           });
-        } else {
-          console.log('No chat history found or error:', error);
         }
       } catch (dbError) {
         console.error('Failed to load chat history from Supabase:', dbError);
@@ -422,8 +411,9 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
     
     // No quick responses - always use AI with full context
     
-    // Always use supervisor for non-greeting messages
-    const needsAgents = useAgents === true || (useAgents !== false && !msg.match(/^(hi|hello|hey)$/i));
+    // Only use agents for specific requests, not general questions
+    const isSimpleQuestion = msg.match(/^(hi|hello|hey|what can you do|what do you do|help|how are you)$/i);
+    const needsAgents = useAgents === true || (useAgents !== false && detectAgentNeed(message) && !isSimpleQuestion);
     const cachedResponse = !needsAgents ? getCachedResponse(message) : null;
     if (cachedResponse) {
       // Emit Socket.IO events for cached response

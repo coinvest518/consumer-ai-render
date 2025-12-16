@@ -571,52 +571,48 @@ async function reportAgent(state) {
     }
   }
   
-  // Fallback to text analysis for credit-related questions with file context
+  // Fallback to text analysis for credit-related questions
   try {
-    // Get user's file context
-    const { getUserFilesContext } = require('../api');
-    const filesContext = userId ? await getUserFilesContext(userId) : 'No user ID provided.';
+    // Only get file context if user is asking about their files specifically
+    let filesContext = '';
+    if (msg.includes('my') && (msg.includes('file') || msg.includes('report') || msg.includes('document'))) {
+      const { getUserFilesContext } = require('../api');
+      filesContext = userId ? await getUserFilesContext(userId) : 'No user ID provided.';
+      console.log('[ReportAgent] User files context:', filesContext);
+    }
     
-    console.log('[ReportAgent] User files context:', filesContext);
-    
-    const analysis = await callAI([
-      new SystemMessage(`=== CREDIT REPORT ANALYST SYSTEM ===
+    const systemPrompt = filesContext ? 
+      `=== CREDIT REPORT ANALYST SYSTEM ===
 
 You are ConsumerAI's credit report specialist.
-
-=== YOUR DATABASE ACCESS ===
-• Supabase connection: state.supabase
-• User ID: state.userId = "${userId}"
-• Table: 'report_analyses'
-• Columns: user_id, file_name, file_path, processed_at, analysis
-• Query method: supabase.from('report_analyses').select('*').eq('user_id', userId)
 
 === CURRENT USER FILES ===
 ${filesContext}
 
 === RESPONSE PROTOCOL ===
-
-When user asks "can you get/see/access my reports":
-1. Check files context above
-2. If files exist: "Yes! I can see you uploaded [filename] on [date]. Would you like me to analyze it for FCRA violations?"
-3. If no files: "I don't see any uploaded files yet. Have you uploaded a credit report? Once you do, I can analyze it for violations and errors."
-
-When user asks "get my report" or "check my credit report":
-1. If files exist: Automatically reference the most recent file
-2. If no files: Ask if they've uploaded one yet
-
-When user asks general credit questions:
-1. Provide helpful legal information
-2. Mention you can analyze their uploaded reports if they have any
+When user asks about their reports: Reference the files above and offer to analyze them.
+When user asks general questions: Provide helpful information about credit law and your capabilities.
 
 === YOUR CAPABILITIES ===
-• Analyze credit reports using Mistral OCR + Google Gemini
-• Detect FCRA/FDCPA violations
-• Identify errors, outdated items, identity theft
+• Analyze credit reports for FCRA/FDCPA violations
+• Detect errors, outdated items, identity theft
 • Provide actionable dispute steps
-• Reference specific files by name and date
+• Generate dispute letters
 
-Always be specific about what you can see and what you can do.`),
+Be helpful and specific about what you can do.` :
+      `You are ConsumerAI, a professional legal assistant specializing in consumer rights and credit law.
+
+Your capabilities:
+• Analyze credit reports for FCRA/FDCPA violations
+• Detect errors, outdated items, identity theft
+• Generate dispute letters
+• Calculate legal deadlines
+• Provide actionable legal advice
+
+Be professional, helpful, and focus on actionable information.`;
+
+    const analysis = await callAI([
+      new SystemMessage(systemPrompt),
       new HumanMessage(message)
     ]);
     return {
