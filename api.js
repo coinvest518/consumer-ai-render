@@ -1074,6 +1074,19 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    // Test database access endpoint
+    if (path === 'test/db-access') {
+      if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+      
+      try {
+        const { testDatabaseAccess } = require('./test-db-access');
+        const results = await testDatabaseAccess();
+        return res.status(200).json({ success: true, results });
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
+      }
+    }
+
     // Admin DB schema & permissions check (server-side only)
     if (path === 'admin/db-check') {
       console.log('supabase object:', typeof supabase, supabase ? 'has rpc:' + typeof supabase.rpc : 'no supabase');
