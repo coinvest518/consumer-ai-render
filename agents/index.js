@@ -53,7 +53,6 @@ function routeAgent(message) {
   if (text.includes('calendar') || text.includes('remind') || text.includes('deadline')) return 'calendar';
   if (text.includes('legal') || text.includes('law') || text.includes('case')) return 'legal';
   if (text.includes('email') || text.includes('send') || text.includes('notify')) return 'email';
-  if (text.includes('track') || text.includes('mail') || text.includes('delivery')) return 'tracking';
   return 'search';
 }
 
@@ -95,6 +94,39 @@ async function reportAgent(state) {
       };
     }
   } else {
+    // If supabase and userId are provided, fetch recent analyzed files to give context
+    if (state && state.supabase && state.userId) {
+      try {
+        const { data, error } = await state.supabase
+          .from('report_analyses')
+          .select('file_name, analysis, processed_at')
+          .eq('user_id', state.userId)
+          .order('processed_at', { ascending: false })
+          .limit(3);
+
+        if (!error && data && data.length > 0) {
+          const filesSummary = data.map((f, i) => {
+            const shortAnalysis = f.analysis ? JSON.stringify(f.analysis).slice(0, 1000) : 'no analysis';
+            const when = f.processed_at || 'unknown';
+            return `${i + 1}. ${f.file_name || 'unknown'} (${when})\nAnalysis: ${shortAnalysis}`;
+          }).join('\n\n');
+
+          const { response } = await chatWithFallback([
+            new SystemMessage(`User recent files context:\n${filesSummary}\n\nAnalyze credit reports for FCRA violations and errors.`),
+            new HumanMessage(message)
+          ]);
+          const content = response && (response.content || response) ? (response.content || response) : '';
+          return {
+            messages: [{ role: 'assistant', content }],
+            toolResults: [{ tool: 'report', result: 'Credit report analyzed with user files' }]
+          };
+        }
+      } catch (err) {
+        console.error('reportAgent: failed to fetch user files context:', err && err.message ? err.message : err);
+        // fall through to text-only analysis
+      }
+    }
+
     // Fallback to text analysis via centralized multi-provider fallback
     const { response } = await chatWithFallback([
       new SystemMessage('Analyze credit reports for FCRA violations and errors.'),
@@ -165,23 +197,6 @@ async function emailAgent(state) {
   }
 }
 
-async function trackingAgent(state) {
-  const message = state.messages[state.messages.length - 1].content;
-  const trackingMatch = message.match(/\b[A-Z0-9]{10,}\b/);
-  if (trackingMatch) {
-    const response = `I found a potential tracking number: ${trackingMatch[0]}. To track your USPS certified mail, please visit https://tools.usps.com/go/TrackConfirmAction and enter this number, or call 1-800-275-8777 for assistance.`;
-    return {
-      messages: [{ role: 'assistant', content: response }],
-      toolResults: [{ tool: 'tracking', result: 'Tracking guidance provided' }]
-    };
-  } else {
-    const response = 'I can help you track your mail! Please provide your tracking number and I\'ll assist you with tracking information.';
-    return {
-      messages: [{ role: 'assistant', content: response }],
-      toolResults: [{ tool: 'tracking', result: 'Tracking guidance provided' }]
-    };
-  }
-}
 
 // Agent executor
 const agents = {
@@ -191,18 +206,19 @@ const agents = {
   calendar: calendarAgent,
   legal: legalAgent,
   email: emailAgent,
-  tracking: trackingAgent
 };
 
-async function executeAgent(agentType, message) {
+async function executeAgent(agentType, message, opts = {}) {
   const agent = agents[agentType];
   if (!agent) throw new Error(`Unknown agent: ${agentType}`);
-  
+
   const state = {
     messages: [{ role: 'user', content: message }],
-    toolResults: []
+    toolResults: [],
+    userId: opts.userId || null,
+    supabase: opts.supabase || null
   };
-  
+
   return await agent(state);
 }
 

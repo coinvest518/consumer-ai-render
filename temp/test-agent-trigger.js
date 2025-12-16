@@ -46,7 +46,20 @@ async function testAgent() {
     console.log('Sending initial request...');
     let res = await doPost(postData);
     console.log('Initial response status:', res.status);
-    console.log('Initial response message:', res.data?.data?.message || JSON.stringify(res.data));
+    
+    const initialMessage = res.data?.data?.message || JSON.stringify(res.data);
+    console.log('Initial response message:', initialMessage);
+    
+    // Check if we already got a JSON analysis response
+    try {
+      const parsed = JSON.parse(initialMessage);
+      if (parsed.summary && (parsed.violations || parsed.account_issues)) {
+        console.log('✅ Full analysis received immediately - no polling needed');
+        return;
+      }
+    } catch (e) {
+      // Not JSON, continue with polling
+    }
 
     const processingRegex = /processing|still processing|not yet complete/i;
     const analysisRegex = /Analysis of|HIGHLIGHTED VIOLATIONS|violations|errors|Actionable items/i;

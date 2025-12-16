@@ -82,56 +82,25 @@ async function callAI(messages) {
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Define agents
-const members = ['search', 'report', 'letter', 'legal', 'email', 'calendar', 'tracking'];
+const members = ['search', 'report', 'letter', 'legal', 'email', 'calendar'];
 
-// Supervisor prompt with comprehensive instructions
-const systemPrompt = `=== CONSUMERAI SUPERVISOR SYSTEM ===
+// Supervisor prompt focused on consumer law (FCRA & FDCPA)
+const systemPrompt = `CONSUMERAI SUPERVISOR - Consumer law specialist
 
-You manage these agents: ${members.join(', ')}
+You coordinate a small set of agents focused on consumer credit law (FCRA & FDCPA).
 
-=== DATABASE ACCESS (ALL AGENTS) ===
-• Supabase connection available via state.supabase
-• User ID available via state.userId (UUID format)
-• Table: 'report_analyses' (user_id, file_name, file_path, processed_at, analysis)
-• Query: await supabase.from('report_analyses').select('*').eq('user_id', userId)
-• All agents receive userId and supabase in their state
+Agent capabilities and context:
+- ` + "state.supabase" + `: Supabase client for DB access
+- ` + "state.userId" + `: Authenticated user's UUID
+- Utilities available: require('../utils/consumerLawDeadlines') for deadline calculations
 
-=== AGENT ROUTING RULES ===
+Routing summary:
+- 'report' for document/report analysis and uploaded files
+- 'letter' for dispute/validation/cease & desist letters
+- 'legal' for statutes, deadlines, mailed timelines, SOL, and legal rights
+- 'search' for general research
 
-Route to 'report' agent when user mentions:
-• Credit report, credit file, credit history
-• Analyze, review, check, examine, look at
-• My report, my file, my documents, my uploads
-• Access, get, retrieve, pull up, show me
-• Violations, errors, disputes, inaccuracies
-• FCRA, FDCPA, credit bureau
-• Equifax, Experian, TransUnion
-• "Can you see/get/access my reports?"
-• "Do you have my credit report?"
-• "Did I upload anything?"
-
-Route to 'tracking' agent when user mentions:
-• Track, tracking number, certified mail
-• USPS, postal service, delivery
-• Timeline, deadline, when, how long
-
-Route to 'letter' agent when user mentions:
-• Generate letter, create letter, write letter
-• Dispute letter, validation letter
-• Cease and desist
-
-Route to 'legal' agent when user mentions:
-• Legal rights, statute, law, regulation
-• FDCPA rights, FCRA rights
-• Statute of limitations
-
-Route to 'search' agent when user mentions:
-• Search for, find information, look up
-• Research, web search
-
-Other agents: email, calendar as needed
-
-When finished, respond with FINISH.`;
+When asked about mailing dates or timelines, calculate exact deadlines using the consumerLawDeadlines utility and provide concise next steps. Keep responses factual, cite dates, and avoid unnecessary legalese.`;
 
 
 
@@ -150,10 +119,6 @@ async function supervisor(state) {
     console.log('[Supervisor] supabase available:', !!state.supabase);
     
     // Priority routing for specific requests
-    if (message.includes('track') || message.includes('certified mail') || message.includes('usps')) {
-      console.log('[Supervisor] Routing to tracking');
-      return { next: 'tracking' };
-    }
     // High priority for document analysis
     if (message.includes('analyze') || message.includes('review') || message.includes('my report') ||
         message.includes('credit report') || message.includes('document') || message.includes('uploaded') ||
@@ -161,6 +126,13 @@ async function supervisor(state) {
         message.includes('fcra') || message.includes('fdcpa') || message.includes('dispute')) {
       console.log('[Supervisor] Routing to report agent');
       return { next: 'report' };
+    }
+
+    // Timeline/mailing questions should be handled by `legal`
+    if (message.includes('mailed') || message.includes('sent') || message.includes('certified mail') ||
+        message.includes('timeline') || message.includes('deadline') || message.includes('days left') || message.includes('when did')) {
+      console.log('[Supervisor] Routing to legal for timeline/mailing question');
+      return { next: 'legal' };
     }
     if (message.includes('letter') || message.includes('dispute')) {
       return { next: 'letter' };
@@ -284,77 +256,149 @@ async function reportAgent(state) {
       
       if (!analysesError && existingAnalyses && existingAnalyses.length > 0) {
         const latestAnalysis = existingAnalyses[0];
-        // Check if the analysis is recent (within last hour) and file still exists
-        const analysisAge = Date.now() - new Date(latestAnalysis.processed_at).getTime();
-        const isRecent = analysisAge < (60 * 60 * 1000); // 1 hour
-        
-        console.log(`[ReportAgent] Found existing analysis, age: ${analysisAge}ms, isRecent: ${isRecent}`);
-        
-        if (isRecent) {
-          console.log(`[ReportAgent] Returning cached analysis`);
-          return {
-            messages: [new HumanMessage({ 
-              content: `📄 **Recent Analysis Available**\n\n${latestAnalysis.analysis.detailed_analysis || latestAnalysis.analysis.summary}\n\n---\n*Using cached analysis from ${new Date(latestAnalysis.processed_at).toLocaleString()}*`, 
-              name: 'ReportAgent' 
-            })],
-          };
+
+        // If we have a completed analysis and it's recent, return it immediately
+        if (latestAnalysis.analysis && latestAnalysis.analysis.summary) {
+          const analysisAge = Date.now() - new Date(latestAnalysis.processed_at).getTime();
+          const isRecent = analysisAge < (60 * 60 * 1000); // 1 hour
+
+          console.log(`[ReportAgent] Found existing analysis, age: ${analysisAge}ms, isRecent: ${isRecent}`);
+
+          if (isRecent) {
+            console.log(`[ReportAgent] Returning cached analysis`);
+            return {
+              messages: [new HumanMessage({ 
+                content: `📄 **Recent Analysis Available**\n\n${latestAnalysis.analysis.detailed_analysis || latestAnalysis.analysis.summary}\n\n---\n*Using cached analysis from ${new Date(latestAnalysis.processed_at).toLocaleString()}*`, 
+                name: 'ReportAgent' 
+              })],
+            };
+          }
+        }
+
+        // If there is a database entry but no completed analysis yet, try to process that exact file first
+        if (!latestAnalysis.analysis) {
+          console.log(`[ReportAgent] Found DB entry with pending analysis for file: ${latestAnalysis.file_name || latestAnalysis.file_path}. Attempting to process it now.`);
+          try {
+            let candidatePath = latestAnalysis.file_path || latestAnalysis.file_name;
+
+            // If file_path isn't fully qualified, attempt to construct likely paths
+            if (candidatePath && !candidatePath.includes('/') && candidatePath.endsWith('.pdf')) {
+              // Try 'credit-reports/<userId>/<file_name>' then '<userId>/<file_name>'
+              const tryPaths = [`credit-reports/${userId}/${candidatePath}`, `${userId}/${candidatePath}`, candidatePath];
+              for (const p of tryPaths) {
+                try {
+                  const { data, error } = await supabase.storage.from('users-file-storage').download(p);
+                  if (!error && data) {
+                    // Found the file in users-file-storage at this path
+                    const { processCreditReport } = require('../reportProcessor');
+                    const result = await processCreditReport(p);
+                    if (!result.error) {
+                      const analysis = result.analysis;
+                      console.log(`[ReportAgent] DB-pending file processed successfully: ${p}`);
+                      return {
+                        messages: [new HumanMessage({ content: JSON.stringify(analysis), name: 'ReportAgent' })],
+                      };
+                    }
+                  }
+                } catch (e) {
+                  // Ignore and try next path
+                }
+              }
+            } else if (candidatePath) {
+              // If candidatePath already looks like a path, attempt direct processing
+              const { processCreditReport } = require('../reportProcessor');
+              const result = await processCreditReport(candidatePath);
+              if (!result.error) {
+                const analysis = result.analysis;
+                console.log(`[ReportAgent] DB-pending file processed successfully: ${candidatePath}`);
+                return {
+                  messages: [new HumanMessage({ content: JSON.stringify(analysis), name: 'ReportAgent' })],
+                };
+              }
+            }
+          } catch (dbProcessError) {
+            console.error(`[ReportAgent] Failed to process DB-pending file:`, dbProcessError.message || dbProcessError);
+          }
+
+          console.log(`[ReportAgent] Found file but no analysis - will continue searching storage and attempt processing`);
         }
       }
       
       // SECOND: If no recent analysis, get the most recent uploaded file
-      // Try multiple buckets like reportProcessor does, but prioritize users-file-storage with credit-reports/ prefix
+      // Search all buckets and all possible paths for this user
       console.log(`[ReportAgent] No recent analysis found, searching for uploaded files...`);
       const buckets = ['users-file-storage', 'credit-reports', 'uploads', 'documents'];
       let latestFile = null;
       let latestBucket = null;
       let latestTimestamp = 0;
+      let latestFilePath = null;
       
       for (const bucket of buckets) {
         try {
-          let listPath = userId;
+          console.log(`[ReportAgent] Checking bucket: ${bucket}`);
           
-          // For users-file-storage bucket, files are stored under credit-reports/userId/
-          if (bucket === 'users-file-storage') {
-            listPath = `credit-reports/${userId}`;
-          }
+          // Try multiple possible paths for this user
+          const possiblePaths = [
+            userId,
+            `credit-reports/${userId}`,
+            `uploads/${userId}`,
+            `documents/${userId}`,
+            '', // root level
+            `credit-reports`,
+            `uploads`,
+            `documents`
+          ];
           
-          console.log(`[ReportAgent] Checking bucket: ${bucket}, path: ${listPath}`);
-          
-          const { data: files, error: filesError } = await supabase.storage
-            .from(bucket)
-            .list(listPath, { limit: 1, sortBy: { column: 'created_at', order: 'desc' } });
-          
-          if (!filesError && files && files.length > 0) {
-            const file = files[0];
-            const fileTimestamp = new Date(file.created_at).getTime();
-            
-            console.log(`[ReportAgent] Found file in ${bucket}: ${file.name}, timestamp: ${fileTimestamp}`);
-            
-            // Check if this is the most recent file across all buckets
-            if (fileTimestamp > latestTimestamp) {
-              latestFile = file;
-              latestBucket = bucket;
-              latestTimestamp = fileTimestamp;
-              console.log(`[ReportAgent] This is now the latest file`);
+          for (const listPath of possiblePaths) {
+            try {
+              console.log(`[ReportAgent] Trying path: ${listPath}`);
+              
+              const { data: files, error: filesError } = await supabase.storage
+                .from(bucket)
+                .list(listPath, { limit: 10, sortBy: { column: 'created_at', order: 'desc' } });
+              
+              if (!filesError && files && files.length > 0) {
+                console.log(`[ReportAgent] Found ${files.length} files in ${bucket}/${listPath}`);
+                
+                for (const file of files) {
+                  // Check if this file belongs to this user (by filename or metadata)
+                  const fileName = file.name.toLowerCase();
+                  const belongsToUser = fileName.includes(userId) || 
+                                       fileName.includes(userId.substring(0, 8)) ||
+                                       listPath.includes(userId);
+                  
+                  if (belongsToUser) {
+                    const fileTimestamp = new Date(file.created_at).getTime();
+                    
+                    console.log(`[ReportAgent] Found user file: ${file.name}, timestamp: ${fileTimestamp}`);
+                    
+                    // Check if this is the most recent file
+                    if (fileTimestamp > latestTimestamp) {
+                      latestFile = file;
+                      latestBucket = bucket;
+                      latestTimestamp = fileTimestamp;
+                      latestFilePath = listPath ? `${listPath}/${file.name}` : file.name;
+                      console.log(`[ReportAgent] This is now the latest file: ${latestFilePath}`);
+                    }
+                  }
+                }
+              }
+            } catch (pathError) {
+              console.log(`[ReportAgent] Path ${listPath} failed:`, pathError.message);
             }
-          } else {
-            console.log(`[ReportAgent] No files found in ${bucket}/${listPath}, error: ${filesError?.message}`);
           }
         } catch (bucketError) {
           console.log(`[ReportAgent] Skipping bucket ${bucket}:`, bucketError.message);
         }
       }
       
-      console.log(`[ReportAgent] Bucket search complete. latestFile: ${latestFile?.name || 'null'}, latestBucket: ${latestBucket || 'null'}`);
+      console.log(`[ReportAgent] Search complete. Latest file: ${latestFile?.name || 'none'}, bucket: ${latestBucket}, path: ${latestFilePath}`);
       
       if (latestFile) {
-        // Construct the full file path based on bucket structure
-        let filePath;
-        if (latestBucket === 'users-file-storage') {
-          filePath = `credit-reports/${userId}/${latestFile.name}`;
-        } else {
-          filePath = `${userId}/${latestFile.name}`;
-        }
+        // Use the file path we already determined
+        const filePath = latestFilePath;
+        
+        console.log(`[ReportAgent] Processing file: ${latestBucket}/${filePath}`);
         
         // Process the document using the centralized processor
         const { processCreditReport } = require('../reportProcessor');
@@ -376,21 +420,27 @@ async function reportAgent(state) {
           })],
         };
         
-        // Save analysis to database asynchronously (don't wait)
-        supabase.from('report_analyses').insert({
-          user_id: userId,
-          file_path: filePath,
-          bucket: latestBucket,
-          analysis: {
-            summary: analysis.summary?.headline || analysis.summary || 'Analysis completed',
-            detailed_analysis: JSON.stringify(analysis),
-            violations_found: (analysis.violations?.length || 0) > 0,
-            errors_found: (analysis.errors?.length || 0) > 0,
-            file_name: latestFile.name,
-            extracted_text: result.extractedText?.substring(0, 1000) + '...' || ''
-          },
-          processed_at: new Date().toISOString()
-        }).catch(saveError => console.error('[ReportAgent] Failed to save analysis:', saveError));
+        // Save analysis to database asynchronously (don't block return)
+        (async () => {
+          try {
+            await supabase.from('report_analyses').insert({
+              user_id: userId,
+              file_path: filePath,
+              bucket: latestBucket,
+              analysis: {
+                summary: analysis.summary?.headline || analysis.summary || 'Analysis completed',
+                detailed_analysis: JSON.stringify(analysis),
+                violations_found: (analysis.violations?.length || 0) > 0,
+                errors_found: (analysis.errors?.length || 0) > 0,
+                file_name: latestFile.name,
+                extracted_text: result.extractedText?.substring(0, 1000) + '...' || ''
+              },
+              processed_at: new Date().toISOString()
+            });
+          } catch (saveError) {
+            console.error('[ReportAgent] Failed to save analysis:', saveError);
+          }
+        })();
         
         return response;
       }
@@ -706,6 +756,35 @@ async function legalAgent(state) {
     const msg = message.toLowerCase();
     let response = "";
     
+    // Handle mailing/timeline deadline questions (use consumerLawDeadlines)
+    if (msg.includes('mailed') || msg.includes('sent') || msg.includes('certified mail') ||
+        msg.includes('timeline') || msg.includes('deadline') || msg.includes('days left') || msg.includes('when did')) {
+      const dateMatch = message.match(/(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})|(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})/);
+      if (dateMatch) {
+        const mailingDate = dateMatch[0];
+        // Determine whether this is a credit (FCRA) or debt (FDCPA) question
+        if (msg.includes('credit') || msg.includes('fcra') || msg.includes('bureau') || msg.includes('equifax') || msg.includes('experian') || msg.includes('transunion')) {
+          const deadlines = ConsumerLawDeadlines.calculateFCRADeadlines(mailingDate, msg.includes('certified') ? 'certified' : 'mail');
+          response = `📅 FCRA Timeline based on mailing date ${mailingDate}\n\n`;
+          response += `• Investigation deadline: ${deadlines.investigationDeadline}\n`;
+          response += `• Extended deadline (if applicable): ${deadlines.extendedDeadline}\n`;
+          response += `• Results deadline: ${deadlines.resultsDeadline}\n`;
+          response += `\n${deadlines.advice}`;
+        } else {
+          const fd = ConsumerLawDeadlines.calculateFDCPADeadlines(mailingDate, msg.includes('certified'));
+          response = `📅 FDCPA Timeline based on mailing date ${mailingDate}\n\n`;
+          response += `• Collector validation notice deadline: ${fd.validationNoticeDeadline}\n`;
+          response += `• Consumer validation period (you have until): ${fd.consumerValidationDeadline}\n`;
+          response += `• Effective deadline (with delivery buffer): ${fd.effectiveDeadline}\n`;
+          response += `\n${fd.advice}`;
+        }
+        return { messages: [new HumanMessage({ content: response, name: 'LegalAgent' })] };
+      } else {
+        response = `📅 To calculate deadlines I need the mailing date. Example: "I mailed my dispute on 12/10/2025 via certified mail".`;
+        return { messages: [new HumanMessage({ content: response, name: 'LegalAgent' })] };
+      }
+    }
+    
     // Handle specific consumer law scenarios
     if (msg.includes('statute of limitations') || msg.includes('sol') || msg.includes('too old')) {
       response = `⚖️ **Statute of Limitations (SOL) - Your Shield Against Old Debts**\n\n`;
@@ -891,152 +970,7 @@ async function calendarAgent(state) {
   }
 }
 
-async function trackingAgent(state) {
-  const message = state.messages[state.messages.length - 1].content;
-  const ConsumerLawDeadlines = require('../utils/consumerLawDeadlines');
-
-  try {
-    const msg = message.toLowerCase();
-
-    // Handle questions about mailing dispute letters
-    if (msg.includes('should i send') || msg.includes('how to send') || msg.includes('certified mail') ||
-        msg.includes('mail letter') || msg.includes('send dispute')) {
-
-      let response = `📬 **Dispute Letter Mailing Guide**\n\n`;
-      response += `For maximum legal protection, always send dispute letters via **Certified Mail with Return Receipt**:\n\n`;
-      response += `✅ **Required for FCRA Disputes** (15 U.S.C. § 1681i)\n`;
-      response += `✅ **Required for FDCPA Validation** (15 U.S.C. § 1692g)\n\n`;
-      response += `**Why Certified Mail?**\n`;
-      response += `• Provides proof of mailing date\n`;
-      response += `• Proves delivery (green card returned)\n`;
-      response += `• Required for legal disputes\n`;
-      response += `• Courts accept as evidence\n\n`;
-      response += `**Timeline Tracking**: Once you mail your letter, I can help you calculate all legal deadlines and response times.`;
-
-      return {
-        messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
-      };
-    }
-
-    // Handle timeline calculations based on user input
-    if (msg.includes('mailed') || msg.includes('sent') || msg.includes('when did') ||
-        msg.includes('timeline') || msg.includes('deadline') || msg.includes('days left')) {
-
-      // Try to extract dates from the message
-      const dateMatch = message.match(/(\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|\d{2,4}[-\/]\d{1,2}[-\/]\d{1,2})/);
-      const today = new Date();
-
-      if (dateMatch) {
-        const mailingDate = new Date(dateMatch[0]);
-        if (!isNaN(mailingDate.getTime())) {
-          let response = `📅 **Legal Timeline Calculation**\n\n`;
-          response += `Based on your mailing date: **${mailingDate.toLocaleDateString()}**\n\n`;
-
-          // Determine if it's FCRA or FDCPA based on context
-          if (msg.includes('credit') || msg.includes('fcra') || msg.includes('bureau') ||
-              msg.includes('equifax') || msg.includes('experian') || msg.includes('transunion')) {
-
-            const deadlines = ConsumerLawDeadlines.calculateFCRADeadlines(mailingDate.toISOString().split('T')[0], 'certified');
-            response += `⚖️ **FCRA Credit Dispute Deadlines**:\n\n`;
-            response += `📅 **Day 1**: Letter mailed (${mailingDate.toLocaleDateString()})\n`;
-            response += `📅 **Day 5**: Acknowledgment required (${deadlines.acknowledgmentDeadline})\n`;
-            response += `📅 **Day 30**: Investigation completed (${deadlines.investigationDeadline})\n`;
-            response += `📅 **Day 45**: Results provided (${deadlines.resultsDeadline})\n\n`;
-
-            // Calculate days remaining
-            const daysSinceMailing = Math.floor((today - mailingDate) / (1000 * 60 * 60 * 24));
-            const daysToInvestigation = 30 - daysSinceMailing;
-            const daysToResults = 45 - daysSinceMailing;
-
-            response += `⏰ **Time Remaining**:\n`;
-            if (daysToInvestigation > 0) {
-              response += `• Investigation deadline: **${daysToInvestigation} days left**\n`;
-            } else {
-              response += `• Investigation: **OVERDUE** (${Math.abs(daysToInvestigation)} days past deadline)\n`;
-            }
-            if (daysToResults > 0) {
-              response += `• Results deadline: **${daysToResults} days left**\n`;
-            } else {
-              response += `• Results: **OVERDUE** (${Math.abs(daysToResults)} days past deadline)\n`;
-            }
-
-          } else if (msg.includes('debt') || msg.includes('fdpca') || msg.includes('collection') ||
-                     msg.includes('collector') || msg.includes('validation')) {
-
-            const deadlines = ConsumerLawDeadlines.calculateFDCPADeadlines(mailingDate.toISOString().split('T')[0], true);
-            response += `⚖️ **FDCPA Debt Collection Deadlines**:\n\n`;
-            response += `📅 **Day 1**: Validation request mailed (${mailingDate.toLocaleDateString()})\n`;
-            response += `📅 **Day 5**: Acknowledgment required (${deadlines.acknowledgmentDate})\n`;
-            response += `📅 **Day 30**: Validation provided (${deadlines.validationDeadline})\n\n`;
-
-            // Calculate days remaining
-            const daysSinceMailing = Math.floor((today - mailingDate) / (1000 * 60 * 60 * 24));
-            const daysToValidation = 30 - daysSinceMailing;
-
-            response += `⏰ **Time Remaining**:\n`;
-            if (daysToValidation > 0) {
-              response += `• Validation deadline: **${daysToValidation} days left**\n`;
-            } else {
-              response += `• Validation: **OVERDUE** (${Math.abs(daysToValidation)} days past deadline)\n`;
-            }
-
-            response += `🚫 **Collection Activity**: Must cease within 5 days if validation not provided\n`;
-          }
-
-          response += `\n💡 **Important Notes**:\n`;
-          response += `• Keep your certified mail receipt and green return card\n`;
-          response += `• Document all communications and dates\n`;
-          response += `• If deadlines are missed, you may have additional legal remedies\n`;
-          response += `• Always follow up if no response received`;
-
-          return {
-            messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
-          };
-        }
-      }
-
-      // No date found, ask for mailing information
-      let response = `📅 **Dispute Timeline Tracking**\n\n`;
-      response += `To calculate your legal deadlines, I need to know:\n\n`;
-      response += `1. **When did you mail your dispute letter?** (provide the date)\n`;
-      response += `2. **Was it sent certified mail?** (required for legal disputes)\n`;
-      response += `3. **What type of dispute?** (credit report or debt collection)\n\n`;
-      response += `Example: "I mailed my credit dispute letter on 12/10/2025 via certified mail"\n\n`;
-      response += `Once you provide this information, I'll calculate all the legal response times and tell you how much time you have left.`;
-
-      return {
-        messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
-      };
-    }
-
-    // Default response for general tracking questions
-    let response = `📬 **Consumer Law Mail & Timeline Guidance**\n\n`;
-    response += `I help you understand the legal requirements and timelines for consumer disputes:\n\n`;
-    response += `**FCRA Credit Disputes**:\n`;
-    response += `• Mail via Certified Mail (required)\n`;
-    response += `• 5 days: Acknowledgment\n`;
-    response += `• 30 days: Investigation completed\n`;
-    response += `• 45 days: Results provided\n\n`;
-    response += `**FDCPA Debt Collection**:\n`;
-    response += `• Mail validation request via Certified Mail\n`;
-    response += `• 5 days: Collection activity must stop\n`;
-    response += `• 30 days: Validation provided\n\n`;
-    response += `Tell me when you mailed your letter and what type of dispute, and I'll calculate your specific deadlines and time remaining.`;
-
-    return {
-      messages: [new HumanMessage({ content: response, name: 'TrackingAgent' })],
-    };
-
-  } catch (error) {
-    console.error('[TrackingAgent] Error:', error);
-    return {
-      messages: [new HumanMessage({
-        content: `I encountered an error calculating timelines. Please provide your mailing date and dispute type, and I'll help you understand the legal deadlines.`,
-        name: 'TrackingAgent'
-      })],
-    };
-  }
-}
+// trackingAgent removed - timeline & mailing guidance handled by legalAgent and supervisor outputs
 
 
 // Create workflow
@@ -1047,8 +981,7 @@ const workflow = new StateGraph(AgentState)
   .addNode('letter', letterAgent)
   .addNode('legal', legalAgent)
   .addNode('email', emailAgent)
-  .addNode('calendar', calendarAgent)
-  .addNode('tracking', trackingAgent);
+  .addNode('calendar', calendarAgent);
 
 // Direct edges to END - no loops back to supervisor
 members.forEach((member) => {

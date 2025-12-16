@@ -3,7 +3,12 @@ const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
 const { ChatGoogle } = require('@langchain/google-gauth');
 const { HumanMessage, AIMessage, SystemMessage } = require('@langchain/core/messages');
 const { Mistral } = require('@mistralai/mistralai');
+const { PostgresChatMessageHistory } = require('@langchain/community/stores/message/postgres');
+const { RunnableWithMessageHistory } = require('@langchain/core/runnables');
+const { ChatPromptTemplate, MessagesPlaceholder } = require('@langchain/core/prompts');
+const { ChatOpenAI } = require('@langchain/openai');
 const Stripe = require('stripe');
+const { Pool } = require('pg');
 
 // Helper function to strip markdown formatting from text
 function stripMarkdown(text) {
@@ -69,6 +74,26 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   }
 } else {
   console.warn('Supabase configuration not provided - some features will be unavailable');
+}
+
+// Initialize PostgreSQL connection for LangChain memory
+let pgPool = null;
+if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  try {
+    // Convert Supabase URL to PostgreSQL connection config
+    const url = new URL(process.env.SUPABASE_URL);
+    pgPool = new Pool({
+      host: url.host,
+      port: 5432,
+      database: 'postgres',
+      user: 'postgres',
+      password: process.env.SUPABASE_SERVICE_ROLE_KEY,
+      ssl: { rejectUnauthorized: false } // Required for Supabase
+    });
+    console.log('PostgreSQL pool configured for LangChain memory');
+  } catch (error) {
+    console.warn('Failed to configure PostgreSQL pool for LangChain:', error.message);
+  }
 }
 
 // Initialize Google AI with Gemini 2.5 Flash model
@@ -183,6 +208,7 @@ if (process.env.STRIPE_SECRET_KEY) {
 
 // Memory storage for chat sessions and response cache
 const chatSessions = new Map();
+const chatStores = new Map(); // For LangChain message history stores
 const responseCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
@@ -261,14 +287,6 @@ function detectAgentNeed(message) {
     'get my', 'see my', 'check my', 'look at my', 'find my',
     'do you have', 'show me', 'pull up', 'retrieve'
   ];
-  
-  // Tracking-specific triggers
-  const trackingTriggers = [
-    'track', 'tracking', 'certified mail', 'usps', 'postal service',
-    'delivery status', 'package status', 'mail status', 'where is my',
-    'tracking number', 'delivery confirmation'
-  ];
-  
   // Other agent triggers
   const otherTriggers = [
     'search for', 'find information about', 'look up',
@@ -277,9 +295,8 @@ function detectAgentNeed(message) {
     'set reminder', 'calendar event'
   ];
   
-  return documentTriggers.some(trigger => msg.includes(trigger)) ||
-         trackingTriggers.some(trigger => msg.includes(trigger)) || 
-         otherTriggers.some(trigger => msg.includes(trigger));
+    return documentTriggers.some(trigger => msg.includes(trigger)) ||
+      otherTriggers.some(trigger => msg.includes(trigger));
 }
 
 // Helper to get user's recent files for AI context
@@ -330,6 +347,8 @@ async function getUserFilesContext(userId) {
   }
 }
 
+// No fallback user id: clients must provide a valid authenticated `userId`.
+
 // Helper to get or create chat history
 async function getChatHistory(sessionId, userId = null) {
   if (!chatSessions.has(sessionId)) {
@@ -355,9 +374,11 @@ async function getChatHistory(sessionId, userId = null) {
     
     const history = [systemMessage];
     
-    // Load previous messages from database if available
+    console.log('getChatHistory called for session:', sessionId, 'userId:', userId, 'supabase exists:', !!supabase);
+    // Load previous messages using Supabase (direct Postgres connection to Supabase is blocked)
     if (supabase && userId) {
       try {
+        console.log('Loading chat history from Supabase for session:', sessionId, 'userId:', userId);
         const { data, error } = await supabase
           .from('chat_history')
           .select('*')
@@ -366,16 +387,19 @@ async function getChatHistory(sessionId, userId = null) {
           .limit(20); // Last 20 messages
         
         if (!error && data) {
+          console.log('Loaded', data.length, 'messages from Supabase');
           data.forEach(msg => {
             if (msg.role === 'user') {
-              history.push(new HumanMessage(msg.content));
+              history.push(new HumanMessage(msg.message)); // Use 'message' column
             } else if (msg.role === 'assistant') {
-              history.push(new AIMessage(msg.content));
+              history.push(new AIMessage(msg.message)); // Use 'message' column
             }
           });
+        } else {
+          console.log('No chat history found or error:', error);
         }
       } catch (dbError) {
-        console.error('Failed to load chat history from database:', dbError);
+        console.error('Failed to load chat history from Supabase:', dbError);
       }
     }
     
@@ -389,11 +413,9 @@ async function getChatHistory(sessionId, userId = null) {
 // Smart message processing with agent detection
 async function processMessage(message, sessionId, socketId = null, useAgents = null, userId = null) {
   try {
-    // Check for tracking requests first - these should use agents
+    // processMessage requires the caller to pass a valid `userId`.
+    // (tracking agent removed) timeline & mailing questions handled via supervisor/legal flows
     const msg = message.toLowerCase();
-    const isTrackingRequest = msg.includes('track') || msg.includes('certified mail') || 
-                             msg.includes('usps') || msg.includes('delivery') || 
-                             msg.includes('package') || msg.includes('mail status');
     
     // No quick responses - always use AI with full context
     
@@ -492,27 +514,41 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
           global.io.to(socketId).emit('agent-thinking-complete');
         }
 
+        // DISABLED: Chat history saving now handled on frontend
         // Save report analysis to database
-        if (supabase && userId) {
+        // if (supabase && userId) {
+        //   try {
+        //     await supabase.from('chat_history').insert([
+        //       {
+        //         session_id: sessionId,
+        //         user_id: userId,
+        //         role: 'user',
+        //         content: message,
+        //         created_at: new Date().toISOString()
+        //       },
+        //       {
+        //         session_id: sessionId,
+        //         user_id: userId,
+        //         role: 'assistant',
+        //         content: stripMarkdown(aiResponse.content || 'Analysis completed'),
+        //         created_at: new Date().toISOString()
+        //       }
+        //     ]);
+        //   } catch (dbError) {
+        //     console.error('Failed to save report messages to database:', dbError);
+        //   }
+        // }
+
+        // Save messages using LangChain PostgresChatMessageHistory
+        const store = chatStores.get(sessionId);
+        if (store) {
           try {
-            await supabase.from('chat_history').insert([
-              {
-                session_id: sessionId,
-                user_id: userId,
-                role: 'user',
-                content: message,
-                created_at: new Date().toISOString()
-              },
-              {
-                session_id: sessionId,
-                user_id: userId,
-                role: 'assistant',
-                content: stripMarkdown(aiResponse.content || 'Analysis completed'),
-                created_at: new Date().toISOString()
-              }
+            await store.addMessages([
+              new HumanMessage(message),
+              new AIMessage(stripMarkdown(aiResponse.content || 'Analysis completed'))
             ]);
           } catch (dbError) {
-            console.error('Failed to save report messages to database:', dbError);
+            console.error('Failed to save report messages to Postgres:', dbError);
           }
         }
 
@@ -544,27 +580,7 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
       let selectedAgent = 'direct';
       
       // Direct agent routing based on message content
-      if (msg.includes('track') || msg.includes('certified mail') || msg.includes('usps') || 
-          msg.includes('timeline') || msg.includes('deadline') || msg.includes('when did')) {
-        selectedAgent = 'tracking';
-        if (socketId && global.io) {
-          global.io.to(socketId).emit('agent-step', {
-            tool: 'tracking',
-            toolInput: message,
-            log: 'Using tracking agent',
-            timestamp: new Date().toISOString()
-          });
-        }
-        
-        try {
-          const { trackingAgent } = require('./agents/supervisor');
-          agentResult = await trackingAgent({ messages: [{ content: message }], userId, supabase });
-        } catch (error) {
-          console.error('Tracking agent error:', error);
-          agentResult = { messages: [{ content: 'Tracking service temporarily unavailable.', name: 'TrackingAgent' }] };
-        }
-        
-      } else if (msg.includes('letter') || msg.includes('dispute letter') || msg.includes('cease')) {
+      if (msg.includes('letter') || msg.includes('dispute letter') || msg.includes('cease')) {
         selectedAgent = 'letter';
         if (socketId && global.io) {
           global.io.to(socketId).emit('agent-step', {
@@ -653,27 +669,54 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
           global.io.to(socketId).emit('agent-thinking-complete');
         }
 
+        // DISABLED: Chat history saving now handled on frontend
         // Save agent response to database
+        // if (supabase && userId) {
+        //   try {
+        //     await supabase.from('chat_history').insert([
+        //       {
+        //         session_id: sessionId,
+        //         user_id: userId,
+        //         role: 'user',
+        //         content: message,
+        //         created_at: new Date().toISOString()
+        //       },
+        //       {
+        //         session_id: sessionId,
+        //         user_id: userId,
+        //         role: 'assistant',
+        //         content: stripMarkdown(aiResponse.content),
+        //         created_at: new Date().toISOString()
+        //       }
+        //     ]);
+        //   } catch (dbError) {
+        //     console.error('Failed to save agent messages to database:', dbError);
+        //   }
+        // }
+
+        // Save messages using Supabase
         if (supabase && userId) {
           try {
+            console.log('Saving agent messages to Supabase for session:', sessionId);
             await supabase.from('chat_history').insert([
               {
                 session_id: sessionId,
                 user_id: userId,
                 role: 'user',
-                content: message,
+                message: message, // Use 'message' column
                 created_at: new Date().toISOString()
               },
               {
                 session_id: sessionId,
                 user_id: userId,
                 role: 'assistant',
-                content: stripMarkdown(aiResponse.content),
+                message: stripMarkdown(aiResponse.content), // Use 'message' column
                 created_at: new Date().toISOString()
               }
             ]);
+            console.log('Agent messages saved successfully to Supabase');
           } catch (dbError) {
-            console.error('Failed to save agent messages to database:', dbError);
+            console.error('Failed to save agent messages to Supabase:', dbError);
           }
         }
 
@@ -711,28 +754,46 @@ async function processMessage(message, sessionId, socketId = null, useAgents = n
         global.io.to(socketId).emit('agent-thinking-complete');
       }
 
+      // DISABLED: Chat history saving now handled on frontend
       // Save to database for direct AI
-      if (supabase && userId) {
+      // if (supabase && userId) {
+      //   try {
+      //     await supabase.from('chat_history').insert([
+      //     {
+      //       session_id: sessionId,
+      //       user_id: userId,
+      //       role: 'user',
+      //       content: message,
+      //       created_at: new Date().toISOString()
+      //     },
+      //     {
+      //       session_id: sessionId,
+      //       user_id: userId,
+      //       role: 'assistant',
+      //       content: stripMarkdown(aiResponse.content),
+      //       created_at: new Date().toISOString()
+      //     }
+      //   ]);
+      //   } catch (dbError) {
+      //     console.error('Failed to save messages to database:', dbError);
+      //   }
+      // }
+
+      // Save messages using LangChain PostgresChatMessageHistory
+      const store = chatStores.get(sessionId);
+      if (store) {
         try {
-          await supabase.from('chat_history').insert([
-            {
-              session_id: sessionId,
-              user_id: userId,
-              role: 'user',
-              content: message,
-              created_at: new Date().toISOString()
-            },
-            {
-              session_id: sessionId,
-              user_id: userId,
-              role: 'assistant',
-              content: stripMarkdown(aiResponse.content),
-              created_at: new Date().toISOString()
-            }
+          console.log('Saving messages to LangChain store for session:', sessionId);
+          await store.addMessages([
+            new HumanMessage(message),
+            new AIMessage(stripMarkdown(aiResponse.content))
           ]);
+          console.log('Messages saved successfully to LangChain store');
         } catch (dbError) {
-          console.error('Failed to save messages to database:', dbError);
+          console.error('Failed to save messages to Postgres:', dbError);
         }
+      } else {
+        console.log('No store found for session:', sessionId);
       }
 
       // Cache the response for direct AI
@@ -1019,8 +1080,34 @@ module.exports = async function handler(req, res) {
       if (!message || !sessionId) {
         return res.status(400).json({ error: 'Missing message or sessionId' });
       }
+      // Require a real userId from client. Do not allow defaults or fake IDs.
+      if (!userId) {
+        return res.status(400).json({ error: 'Missing userId. Client must pass authenticated user id.' });
+      }
 
       try {
+        // Validate that the provided userId exists in `profiles` to avoid fake IDs.
+        if (supabase) {
+          try {
+            const { data: profile, error: profileErr } = await supabase
+              .from('profiles')
+              .select('id')
+              .eq('id', userId)
+              .maybeSingle();
+
+            if (profileErr) {
+              console.error('Error checking profile existence:', profileErr);
+              return res.status(500).json({ error: 'Error validating userId' });
+            }
+            if (!profile) {
+              return res.status(400).json({ error: { code: 'INVALID_USER', message: 'Invalid userId: profile not found' } });
+            }
+          } catch (err) {
+            console.error('Exception validating userId:', err);
+            return res.status(500).json({ error: 'Exception validating userId' });
+          }
+        }
+
         const result = await processMessage(message, sessionId, socketId, useAgents, userId);
         return res.status(200).json({ data: result });
       } catch (error) {
@@ -1039,24 +1126,30 @@ module.exports = async function handler(req, res) {
         return res.status(200).json({ data: [] }); // Return empty history if no database
       }
 
-      const { data, error } = await supabase
-        .from('chat_history')
-        .select('*')
-        .eq('session_id', sessionId)
-        .order('created_at', { ascending: true });
+      try {
+        const { data, error } = await supabase
+          .from('chat_history')
+          .select('*')
+          .eq('session_id', sessionId)
+          .order('created_at', { ascending: true });
 
-      if (error) {
+        if (error) {
+          console.error('Failed to fetch chat history:', error);
+          return res.status(500).json({ error: error.message });
+        }
+
+        const formatted = (data || []).map((msg, idx) => ({
+          id: msg.id || `${sessionId}-${idx}-${msg.role}`,
+          content: msg.message, // Use 'message' column
+          role: msg.role,
+          created_at: msg.created_at
+        }));
+
+        return res.status(200).json({ data: formatted });
+      } catch (error) {
+        console.error('Failed to fetch chat history:', error);
         return res.status(500).json({ error: error.message });
       }
-
-      const formatted = (data || []).map((msg, idx) => ({
-        id: msg.id || `${sessionId}-${idx}-${msg.role}`,
-        content: msg.content,
-        role: msg.role,
-        created_at: msg.created_at
-      }));
-
-      return res.status(200).json({ data: formatted });
     }
 
     // User stats endpoint

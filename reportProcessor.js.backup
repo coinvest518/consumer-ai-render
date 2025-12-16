@@ -184,27 +184,20 @@ async function analyzeText(text) {
   
   console.log(`Analyzing text of length: ${truncatedText.length} characters (original: ${text.length})`);
 
-  const systemPrompt = `You are a credit report analysis expert. Analyze this ENTIRE credit report text and return ONLY a JSON object.
+  const systemPrompt = `Analyze this credit report and return ONLY JSON with this structure:
 
-Extract and analyze ALL information including:
-- Every account name, number, creditor, balance, status
-- All collection agencies and their contact information  
-- All personal information (names, addresses, SSN, DOB)
-- All inquiries with dates and purposes
-- All violations and errors
-
-Return ONLY this JSON structure:
 {
-  "summary": "Comprehensive summary of all findings",
-  "personal_info_issues": [
-    {"type": "name/address/ssn/dob issue", "description": "Details", "evidence": "Exact quote", "severity": "high/medium/low"}
-  ],
-  "account_issues": [
-    {"account_name": "Full creditor name", "account_number": "Number", "status": "Status", "balance": "Balance", "issue_type": "Issue", "evidence": "Quote", "severity": "high/medium/low"}
-  ],
-  "collection_accounts": [
-    {
-      "creditor_name": "Original creditor",
+  "summary": "Brief summary of findings",
+  "personal_info_issues": [{"type": "name/address/ssn issue", "description": "Issue details", "evidence": "Quote from report", "severity": "high/medium/low"}],
+  "account_issues": [{"account_name": "Creditor name", "account_number": "Number", "status": "Status", "balance": "Balance", "issue_type": "Issue", "evidence": "Quote", "severity": "high/medium/low"}],
+  "collection_accounts": [{"creditor_name": "Original creditor", "collection_agency": "Agency name", "account_number": "Number", "balance": "Balance", "fdpca_issues": "Any violations"}],
+  "inquiries": [{"creditor_name": "Who inquired", "date": "Date", "purpose": "Purpose", "issue": "Any problems"}],
+  "fcra_violations": [{"violation": "Violation type", "evidence": "Quote", "severity": "high/medium/low"}],
+  "overall_assessment": {"credit_score_impact": "high/medium/low", "total_accounts_affected": 0, "overall_risk_level": "clean/minor/significant/serious", "priority_actions": ["Action 1", "Action 2"]},
+  "dispute_letters_needed": [{"type": "investigation/correction/violation", "target": "Who to contact", "accounts_involved": ["Account names"]}]
+}
+
+Extract ALL account names, numbers, creditors, balances, contact info. Look for multiple names/addresses. Return ONLY JSON.`;
       "collection_agency": "Collection agency name and contact info if available",
       "account_number": "Account number",
       "original_balance": "Original amount",
