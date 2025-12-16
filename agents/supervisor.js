@@ -266,9 +266,24 @@ async function reportAgent(state) {
 
           if (isRecent) {
             console.log(`[ReportAgent] Returning cached analysis`);
+            // If we have an OCR artifact id, fetch a small evidence snippet
+            let evidenceNote = '';
+            if (latestAnalysis.ocr_artifact_id && state.supabase) {
+              try {
+                const { data: ocrRows } = await state.supabase.from('ocr_artifacts').select('ocr_pages').eq('id', latestAnalysis.ocr_artifact_id).limit(1);
+                if (ocrRows && ocrRows.length > 0 && ocrRows[0].ocr_pages && ocrRows[0].ocr_pages.length > 0) {
+                  const firstPage = ocrRows[0].ocr_pages[0];
+                  const snippet = (firstPage && (firstPage.text || firstPage.markdown)) ? ((firstPage.text || firstPage.markdown).substring(0, 400)) : null;
+                  if (snippet) evidenceNote = `\n\n**Evidence (excerpt):**\n${snippet}...`;
+                }
+              } catch (e) {
+                console.warn('[ReportAgent] Failed to fetch OCR evidence:', e.message || e);
+              }
+            }
+
             return {
               messages: [new HumanMessage({ 
-                content: `📄 **Recent Analysis Available**\n\n${latestAnalysis.analysis.detailed_analysis || latestAnalysis.analysis.summary}\n\n---\n*Using cached analysis from ${new Date(latestAnalysis.processed_at).toLocaleString()}*`, 
+                content: `📄 **Recent Analysis Available**\n\n${latestAnalysis.analysis.detailed_analysis || latestAnalysis.analysis.summary}${evidenceNote}\n\n---\n*Using cached analysis from ${new Date(latestAnalysis.processed_at).toLocaleString()}*`, 
                 name: 'ReportAgent' 
               })],
             };
@@ -427,6 +442,7 @@ async function reportAgent(state) {
               user_id: userId,
               file_path: filePath,
               bucket: latestBucket,
+              ocr_artifact_id: result.ocr_artifact_id || null,
               analysis: {
                 summary: analysis.summary?.headline || analysis.summary || 'Analysis completed',
                 detailed_analysis: JSON.stringify(analysis),

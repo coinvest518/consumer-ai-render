@@ -83,6 +83,9 @@ async function extractTextFromPDF(buffer) {
       .map(page => page.markdown)
       .join('\n\n');
 
+    // Return both the extracted text and the raw OCR pages for layout/evidence
+    return { extractedText, ocrPages: ocrResponse.pages };
+
     console.log('📝 Extracted text length:', extractedText.length);
 
     if (!extractedText || extractedText.trim().length < 10) {
@@ -98,7 +101,7 @@ async function extractTextFromPDF(buffer) {
     try {
       const data = await pdfParse(buffer);
       console.log('📄 PDF-parse fallback: pages:', data.numpages, 'text length:', data.text.length);
-      return data.text;
+      return { extractedText: data.text, ocrPages: null };
     } catch (fallbackError) {
       console.error('❌ Fallback also failed:', fallbackError);
       throw new Error(`OCR failed: ${error.message}`);
@@ -138,20 +141,246 @@ async function extractText(buffer, fileName) {
   if (ext === '.pdf') {
     try {
       // First try regular PDF text extraction
-      const pdfText = await extractTextFromPDF(buffer);
-      if (pdfText && pdfText.trim().length > 100) {
-        return pdfText; // Return if we got good text
+      const pdfResult = await extractTextFromPDF(buffer);
+      if (pdfResult && pdfResult.extractedText && pdfResult.extractedText.trim().length > 100) {
+        return pdfResult; // Return object { extractedText, ocrPages }
       }
       
       // If PDF text extraction failed or returned very little text,
-      // it might be a scanned PDF - try OCR
+      // it might be a scanned PDF - try OCR (images)
       console.log('PDF text extraction yielded insufficient text, trying OCR...');
-      return await extractTextFromImage(buffer, fileName);
+      const imgText = await extractTextFromImage(buffer, fileName);
+      return { extractedText: imgText, ocrPages: null };
     } catch (pdfError) {
       console.log('PDF extraction failed, trying OCR:', pdfError.message);
       // Fallback to OCR for scanned PDFs
-      return await extractTextFromImage(buffer, fileName);
+      const imgText = await extractTextFromImage(buffer, fileName);
+      return { extractedText: imgText, ocrPages: null };
     }
+  }
+}
+
+/**
+ * Classify the document type using heuristics and LLM fallback
+ * @param {string} text
+ * @returns {Promise<string>} - one of: 'credit-report', 'debt-letter', 'cfpb-complaint', 'unknown'
+ */
+async function classifyDocumentType(text) {
+  if (!text || text.length < 50) return 'unknown';
+
+  const lowered = text.toLowerCase();
+  // Heuristics
+  if (/\b(experian|transunion|equifax|credit report|credit bureau)\b/.test(lowered)) return 'credit-report';
+  if (/\b(collection agency|validation notice|debt collector|fdcpa|account number|balance due)\b/.test(lowered)) return 'debt-letter';
+  if (/\b(consumer complaint|cfpb complaint|complaint filed|consumerfinance.gov)\b/.test(lowered)) return 'cfpb-complaint';
+
+  // Fallback to LLM few-shot classification
+  try {
+    const system = `You are a document classifier. Return ONLY one token indicating document type from: credit-report, debt-letter, cfpb-complaint, other`;
+    const { response } = await chatWithFallback([
+      new SystemMessage(system),
+      new HumanMessage("Classify this document and return only the type token (no extra text):\n\n" + (text.substring(0, 2000)))
+    ]);
+    const txt = (response.content || response).trim().toLowerCase();
+    if (txt.includes('credit')) return 'credit-report';
+    if (txt.includes('debt')) return 'debt-letter';
+    if (txt.includes('cfpb') || txt.includes('complaint')) return 'cfpb-complaint';
+    return 'other';
+  } catch (err) {
+    console.warn('Document classification LLM failed, defaulting to other:', err.message);
+    return 'other';
+  }
+}
+
+/**
+ * Analyze debt collection letters for key fields using an LLM and validate output
+ */
+async function analyzeDebtLetter(text) {
+  const systemPrompt = `You are an expert at reading debt collection letters and extracting structured data. Return ONLY JSON matching the debt-letter schema. Include creditor_name, date_received (YYYY-MM-DD if possible), account_id_masked, balance_claimed, validation_notice_present (boolean), validation_notice_text (string if present), evidence (array of quotes), recommended_actions (array of strings), severity (low|medium|high).`;
+
+  try {
+    const { response } = await chatWithFallback([
+      new SystemMessage(systemPrompt),
+      new HumanMessage(`Extract from this document:
+\n${text.substring(0, 80000)}`)
+    ]);
+
+    let analysisText = (response.content || response) ? String(response.content || response).trim() : '';
+    analysisText = analysisText.replace(/```json\n?|\n?```/g, '').trim();
+
+    let parsed = null;
+    try { parsed = JSON.parse(analysisText); } catch (err) {
+      const jsonMatch = analysisText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+    }
+
+    // Validate against debt-letter schema
+    const { validate } = require('./utils/ajvValidate');
+    if (parsed) {
+      const { valid, errors } = validate('debt-letter.schema.json', parsed);
+      parsed._validation = { valid, errors };
+      return parsed;
+    }
+
+    return { summary: analysisText, _validation: { valid: false, errors: ['Parsing failed'] } };
+  } catch (error) {
+    console.error('Error analyzing debt letter:', error.message);
+    return { summary: 'Analysis failed', error: error.message };
+  }
+}
+
+async function analyzeGenericDocument(text) {
+  const systemPrompt = `You are a consumer law analyst. Given this document, return JSON with keys: summary, issues (array of {type, description, evidence}), recommended_actions (array of strings). Return ONLY JSON.`;
+  try {
+    const { response } = await chatWithFallback([
+      new SystemMessage(systemPrompt),
+      new HumanMessage(`Analyze this document:\n\n${text.substring(0, 80000)}`)
+    ]);
+    let analysisText = (response.content || response) ? String(response.content || response).trim() : '';
+    analysisText = analysisText.replace(/```json\n?|\n?```/g, '').trim();
+    let parsed = null;
+    try { parsed = JSON.parse(analysisText); } catch (err) {
+      const jsonMatch = analysisText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+    }
+    return parsed || { summary: analysisText };
+  } catch (err) {
+    console.error('Generic analysis error:', err.message);
+    return { summary: 'Analysis failed', error: err.message };
+  }
+}
+
+/**
+ * General document processing entrypoint: detects type, analyzes, and returns metadata
+ */
+async function processDocument(filePath, userId = null) {
+  try {
+    const buffer = await downloadFromStorage(filePath);
+    const { extractedText, ocrPages } = await extractText(buffer, filePath);
+    // persist full OCR artifact if we have a userId and an OCR result
+    let ocr_artifact_id = null;
+    if (userId && ocrPages) {
+      try {
+        const saved = await saveOcrArtifact(userId, filePath, path.basename(filePath), ocrPages);
+        // saveOcrArtifact returns the inserted row id
+        ocr_artifact_id = saved || null;
+      } catch (err) {
+        console.warn('Failed to save OCR artifact:', err.message);
+      }
+    }
+
+    const docTypeFromEmbedding = await classifyWithEmbeddings(extractedText);
+    let docType = docTypeFromEmbedding || (await classifyDocumentType(extractedText));
+
+    let analysis = null;
+    if (docType === 'credit-report') {
+      analysis = await analyzeText(extractedText);
+    } else if (docType === 'debt-letter') {
+      analysis = await analyzeDebtLetter(extractedText);
+    } else if (docType === 'cfpb-complaint') {
+      analysis = await analyzeGenericDocument(extractedText);
+    } else {
+      analysis = await analyzeGenericDocument(extractedText);
+    }
+
+    return {
+      filePath,
+      extractedText,
+      ocrPages: ocrPages || null,
+      ocr_artifact_id,
+      docType,
+      analysis,
+      processedAt: new Date().toISOString()
+    };
+  } catch (error) {
+    console.error('Error processing document:', error.message);
+    return { filePath, error: error.message, processedAt: new Date().toISOString() };
+  }
+}
+
+/**
+ * Save full OCR artifact to Supabase table `ocr_artifacts`
+ */
+async function saveOcrArtifact(userId, filePath, fileName, ocrPages) {
+  if (!supabase) throw new Error('Supabase client not initialized');
+  const { data, error } = await supabase.from('ocr_artifacts').insert([{ user_id: userId, file_path: filePath, file_name: fileName, ocr_pages: ocrPages }]).select('id').limit(1);
+  if (error) throw error;
+  if (Array.isArray(data) && data.length > 0) return data[0].id;
+  if (data && data.id) return data.id;
+  return null;
+}
+
+/**
+ * Add a labeled sample to document_embeddings table (computes embedding)
+ */
+async function addLabeledSample(userId, label, snippet, filePath = null) {
+  const { getEmbedding } = require('./utils/embeddings');
+  const embedding = await getEmbedding(snippet);
+  if (!embedding) throw new Error('Failed to compute embedding');
+  if (!supabase) throw new Error('Supabase client not initialized');
+  try {
+    const { data, error } = await supabase.from('document_embeddings').insert([{ user_id: userId, file_path: filePath, label, embedding }]);
+    if (error) {
+      // Permission or RLS issues are common during local tests
+      const msg = (error && error.message) ? error.message : JSON.stringify(error);
+      // If permission error, fallback to storing in document_labels table which often has more permissive policies
+      if ((error && (error.code === '42501' || (error.message && error.message.toLowerCase().includes('permission')))) || msg.toLowerCase().includes('permission')) {
+        console.warn('document_embeddings insert failed due to permissions. Falling back to document_labels. Error:', msg);
+        const meta = { fallback_reason: 'permission', original_error: msg };
+        const { data: lblData, error: lblErr } = await supabase.from('document_labels').insert([{ user_id: userId, label, snippet, metadata: meta }]);
+        if (lblErr) throw new Error(`Failed to insert fallback label: ${lblErr.message || JSON.stringify(lblErr)}`);
+        return { fallback: true, table: 'document_labels', inserted: lblData };
+      }
+      throw new Error(`Supabase insert failed: ${msg}`);
+    }
+    return { fallback: false, table: 'document_embeddings', inserted: data };
+  } catch (err) {
+    // Provide guidance for common permission issues
+    if (err.message && err.message.toLowerCase().includes('permission')) {
+      throw new Error('Permission denied when inserting into document_embeddings. Ensure the SQL migration has been applied and your environment is using a Supabase service role key (SUPABASE_SERVICE_ROLE_KEY) for server-side operations.');
+    }
+    throw err;
+  }
+}
+
+/**
+ * Classify using nearest neighbors in document_embeddings (returns label or null)
+ */
+async function classifyWithEmbeddings(text, k = 5, minScore = 0.7) {
+  try {
+    const { getEmbedding } = require('./utils/embeddings');
+    const queryEmb = await getEmbedding(text);
+    if (!queryEmb) return null;
+
+    if (!supabase) return null;
+    const { data, error } = await supabase.from('document_embeddings').select('id,label,embedding').limit(500);
+    if (error || !data) return null;
+
+    // compute cosine similarity
+    function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
+    function norm(a) { return Math.sqrt(dot(a, a)); }
+    const qnorm = norm(queryEmb);
+
+    const scored = data.map(row => {
+      const emb = row.embedding;
+      const score = qnorm && emb ? dot(queryEmb, emb) / (qnorm * norm(emb)) : 0;
+      return { id: row.id, label: row.label, score };
+    }).sort((a,b)=>b.score-a.score).slice(0,k);
+
+    if (scored.length === 0) return null;
+    const top = scored[0];
+    if (top.score >= minScore) return top.label;
+
+    // Weighted vote
+    const votes = {};
+    for (const s of scored) {
+      votes[s.label] = (votes[s.label] || 0) + Math.max(0, s.score);
+    }
+    const winner = Object.keys(votes).sort((a,b)=>votes[b]-votes[a])[0];
+    return winner || null;
+  } catch (err) {
+    console.warn('Embedding classifier failed:', err.message);
+    return null;
   }
 }
 
@@ -355,35 +584,25 @@ CRITICAL REQUIREMENTS:
  * @returns {Promise<Object>} - Complete analysis
  */
 async function processCreditReport(filePath) {
-  try {
-    // Download file
-    const buffer = await downloadFromStorage(filePath);
-
-    // Extract text
-    const text = await extractText(buffer, filePath);
-
-    // Analyze text
-    const analysis = await analyzeText(text);
-
-    return {
-      filePath,
-      extractedText: text,
-      analysis,
-      processedAt: new Date().toISOString()
-    };
-  } catch (error) {
-    console.error('Error processing credit report:', error);
-    return {
-      filePath,
-      error: error.message,
-      processedAt: new Date().toISOString()
-    };
+  // Backwards-compatible wrapper that calls the general processor
+  const res = await processDocument(filePath);
+  // Ensure docType is credit-report (or warn)
+  if (res.docType && res.docType !== 'credit-report') {
+    console.warn(`processCreditReport: detected docType=${res.docType} for ${filePath}`);
   }
+  return res;
 }
 
 module.exports = {
   processCreditReport,
+  processDocument,
   downloadFromStorage,
   extractText,
-  analyzeText
+  analyzeText,
+  classifyDocumentType,
+  analyzeDebtLetter,
+  analyzeGenericDocument,
+  saveOcrArtifact,
+  addLabeledSample,
+  classifyWithEmbeddings
 };

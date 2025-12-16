@@ -73,10 +73,11 @@ async function processFile(userId, fileName) {
 
   try {
     console.log('1. Extracting text (OCR if needed)...');
-    const result = await processCreditReport(filePath);
+    const result = await require('./reportProcessor').processDocument(filePath, userId);
 
     console.log('✅ Text extracted successfully!');
     console.log(`📏 Text length: ${result.extractedText?.length || 0} characters`);
+    console.log(`📄 Detected document type: ${result.docType || 'unknown'}`);
 
     if (result.extractedText && result.extractedText.length > 100) {
       console.log('\n📄 Extracted text preview:');
@@ -112,14 +113,19 @@ async function processFile(userId, fileName) {
       user_id: userId,
       file_path: filePath,
       file_name: fileName,
+      doc_type: result.docType || 'unknown',
       extracted_text: result.extractedText?.substring(0, 5000), // Limit text storage
+      ocr_artifact_id: result.ocr_artifact_id || null,
+      ocr_layout: result.ocrPages ? JSON.stringify(result.ocrPages).substring(0, 20000) : null,
       analysis: result.analysis,
       violations_found: result.analysis?.violations?.length > 0,
-      errors_found: result.analysis?.errors?.length > 0
+      errors_found: result.analysis?.errors?.length > 0,
+      processed_at: result.processedAt || new Date().toISOString()
     });
 
     if (dbError) {
       console.error('❌ Database save failed:', dbError.message);
+      console.error('Tip: Ensure the DB migrations in sql/ were applied (add_doc_type_to_report_analyses.sql, add_ocr_artifact_id_to_report_analyses.sql) and that your SUPABASE_SERVICE_ROLE_KEY has permission to insert rows. You can run the admin DB check at /api/admin/db-check to get hints.');
     } else {
       console.log('✅ Analysis saved to database!');
     }

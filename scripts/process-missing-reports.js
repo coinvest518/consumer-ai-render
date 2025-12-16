@@ -86,6 +86,7 @@ async function processMissingReportsForUser(userId) {
           const { error: insErr } = await supabase.from('report_analyses').insert({
             user_id: userId,
             file_path: filePath,
+            ocr_artifact_id: result.ocr_artifact_id || null,
             analysis: analysis,
             processed_at: processedAt
           });

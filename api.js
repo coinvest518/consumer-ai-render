@@ -76,23 +76,26 @@ if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
   console.warn('Supabase configuration not provided - some features will be unavailable');
 }
 
-// Initialize PostgreSQL connection for LangChain memory
+// Initialize PostgreSQL connection for LangChain memory and admin checks
 let pgPool = null;
-if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+if (process.env.SUPABASE_POSTGRES_URL) {
   try {
-    // Convert Supabase URL to PostgreSQL connection config
-    const url = new URL(process.env.SUPABASE_URL);
-    pgPool = new Pool({
-      host: url.host,
-      port: 5432,
-      database: 'postgres',
-      user: 'postgres',
-      password: process.env.SUPABASE_SERVICE_ROLE_KEY,
-      ssl: { rejectUnauthorized: false } // Required for Supabase
-    });
-    console.log('PostgreSQL pool configured for LangChain memory');
+    pgPool = new Pool({ connectionString: process.env.SUPABASE_POSTGRES_URL, ssl: { rejectUnauthorized: false } });
+    console.log('PostgreSQL pool configured from SUPABASE_POSTGRES_URL');
   } catch (error) {
-    console.warn('Failed to configure PostgreSQL pool for LangChain:', error.message);
+    console.warn('Failed to configure PostgreSQL pool from SUPABASE_POSTGRES_URL:', error.message);
+  }
+} else if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  try {
+    // Fallback: try to parse SUPABASE_URL and use service role key as password (best-effort)
+    const url = new URL(process.env.SUPABASE_URL);
+    const host = url.hostname;
+    const pathname = url.pathname.replace('/', '') || 'postgres';
+    const ssl = { rejectUnauthorized: false };
+    pgPool = new Pool({ host, port: 5432, database: pathname, user: 'postgres', password: process.env.SUPABASE_SERVICE_ROLE_KEY, ssl });
+    console.log('PostgreSQL pool configured from SUPABASE_URL fallback');
+  } catch (error) {
+    console.warn('Failed to configure PostgreSQL pool from SUPABASE_URL fallback:', error.message);
   }
 }
 
@@ -1071,6 +1074,114 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    // Admin DB schema & permissions check (server-side only)
+    if (path === 'admin/db-check') {
+      console.log('supabase object:', typeof supabase, supabase ? 'has rpc:' + typeof supabase.rpc : 'no supabase');
+      if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+      if (!supabase) return res.status(500).json({ error: 'Supabase not configured' });
+      try {
+        const required = {
+          tables: ['ocr_artifacts', 'report_analyses'],
+          report_analyses_cols: ['ocr_artifact_id', 'doc_type']
+        };
+
+        const results = { tables: {}, columns: {}, notes: [] };
+
+        // Prefer using pgPool to query information_schema correctly (avoids using supabase.from('information_schema.*'))
+        if (pgPool) {
+          try {
+            const tableNames = ['ocr_artifacts', 'report_analyses'];
+            for (const t of tableNames) {
+              try {
+                const q = `SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=$1) AS exists`;
+                const r = await pgPool.query(q, [t]);
+                results.tables[t] = r && r.rows && r.rows[0] && r.rows[0].exists === true;
+              } catch (err) {
+                results.tables[t] = false;
+                results.notes.push(`information_schema query for ${t} failed: ${err.message}`);
+              }
+            }
+
+            const cols = ['ocr_artifact_id', 'doc_type'];
+            for (const c of cols) {
+              try {
+                const qc = `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='report_analyses' AND column_name=$1) AS exists`;
+                const rc = await pgPool.query(qc, [c]);
+                results.columns[c] = rc && rc.rows && rc.rows[0] && rc.rows[0].exists === true;
+              } catch (err) {
+                results.columns[c] = false;
+                results.notes.push(`information_schema query for column ${c} failed: ${err.message}`);
+              }
+            }
+          } catch (err) {
+            results.notes.push('pgPool information_schema checks failed: ' + (err.message || err));
+          }
+        } else {
+          // Fallback: Check tables/columns by performing harmless selects via Supabase client
+          const tableChecks = [
+            { name: 'ocr_artifacts', query: () => supabase.from('ocr_artifacts').select('id').limit(1) },
+            { name: 'report_analyses', query: () => supabase.from('report_analyses').select('id').limit(1) }
+          ];
+
+          for (const { name, query } of tableChecks) {
+            try {
+              const { data, error } = await query();
+              results.tables[name] = !error;
+              if (error) results.notes.push(`Table ${name} check failed: ${error.message}`);
+            } catch (err) {
+              results.tables[name] = false;
+              results.notes.push(`Table ${name} check error: ${err.message}`);
+            }
+          }
+
+          // Check columns by trying selects
+          const columnChecks = [
+            { name: 'ocr_artifact_id', query: () => supabase.from('report_analyses').select('ocr_artifact_id').limit(1) },
+            { name: 'doc_type', query: () => supabase.from('report_analyses').select('doc_type').limit(1) }
+          ];
+
+          for (const { name, query } of columnChecks) {
+            try {
+              const { data, error } = await query();
+              results.columns[name] = !error;
+              if (error) results.notes.push(`Column ${name} check failed: ${error.message}`);
+            } catch (err) {
+              results.columns[name] = false;
+              results.notes.push(`Column ${name} check error: ${err.message}`);
+            }
+          }
+        }
+
+        // Permission hint: try a harmless select on ocr_artifacts
+        try {
+          await supabase.from('ocr_artifacts').select('id').limit(1);
+          results.notes.push('Select on ocr_artifacts succeeded');
+        } catch (err) {
+          results.notes.push('Select on ocr_artifacts failed: ' + (err.message || err));
+        }
+
+        return res.status(200).json({ ok: true, results });
+      } catch (err) {
+        console.error('admin/db-check error:', err.message || err);
+        return res.status(500).json({ error: err.message || 'DB check failed' });
+      }
+    }
+
+    // Labeled samples - add labeled example (server-side; requires SUPABASE_SERVICE_ROLE_KEY)
+    if (path === 'labels') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      const { userId, label, snippet, filePath } = req.body || {};
+      if (!label || !snippet) return res.status(400).json({ error: 'Missing label or snippet' });
+      try {
+        const rp = require('./reportProcessor');
+        const inserted = await rp.addLabeledSample(userId || null, label, snippet, filePath || null);
+        return res.status(200).json({ success: true, inserted });
+      } catch (err) {
+        console.error('Failed to insert labeled sample via API:', err.message || err);
+        return res.status(500).json({ error: err.message || 'Insert failed' });
+      }
+    }
+
     // Chat endpoint - simplified without complex agents
     if (path === 'chat') {
       if (req.method === 'GET') return res.status(200).json({ status: 'ok' });
@@ -1284,8 +1395,9 @@ module.exports = async function handler(req, res) {
           await supabase.from('report_analyses').insert({
             user_id: userId,
             file_path: filePath,
+            ocr_artifact_id: result.ocr_artifact_id || null,
             analysis: result.analysis,
-            processed_at: result.processedAt
+            processed_at: result.processedAt || new Date().toISOString()
           });
         }
 
@@ -1293,6 +1405,28 @@ module.exports = async function handler(req, res) {
       } catch (error) {
         console.error('Report analysis error:', error);
         return res.status(500).json({ error: error.message });
+      }
+    }
+
+    // Fetch stored analysis + OCR evidence for a file
+    if (path === 'report/analysis' && req.method === 'GET') {
+      const filePath = req.query.filePath || req.query.file_path;
+      const userId = req.query.userId || req.query.user_id;
+      if (!filePath || !userId) return res.status(400).json({ error: 'Missing filePath or userId' });
+      try {
+        const { data: rows, error } = await supabase.from('report_analyses').select('*').eq('user_id', userId).eq('file_path', filePath).limit(1);
+        if (error) return res.status(500).json({ error: error.message });
+        if (!rows || rows.length === 0) return res.status(404).json({ error: 'No analysis found' });
+        const row = rows[0];
+        let ocr = null;
+        if (row.ocr_artifact_id) {
+          const { data: ocrRows, error: oErr } = await supabase.from('ocr_artifacts').select('*').eq('id', row.ocr_artifact_id).limit(1);
+          if (!oErr && ocrRows && ocrRows.length > 0) ocr = ocrRows[0];
+        }
+        return res.status(200).json({ analysis: row.analysis, ocr });
+      } catch (err) {
+        console.error('report/analysis error:', err.message || err);
+        return res.status(500).json({ error: err.message || 'Failed to fetch analysis' });
       }
     }
 
@@ -1420,8 +1554,8 @@ module.exports = async function handler(req, res) {
               // Fire-and-forget processing
               (async () => {
                 try {
-                  const { processCreditReport } = require('./reportProcessor');
-                  const result = await processCreditReport(filePath);
+                  const { processDocument } = require('./reportProcessor');
+                  const result = await processDocument(filePath, userId || null);
                   console.log('Triggered report processing from Supabase webhook for file:', filePath);
 
                   // Optionally store analysis results in DB if supabase client is available
@@ -1429,8 +1563,9 @@ module.exports = async function handler(req, res) {
                     await supabase.from('report_analyses').insert({
                       user_id: userId,
                       file_path: filePath,
+                      ocr_artifact_id: result.ocr_artifact_id || null,
                       analysis: result.analysis || result,
-                      processed_at: new Date().toISOString()
+                      processed_at: result.processedAt || new Date().toISOString()
                     }).catch(err => console.error('Failed to save analysis:', err));
                   }
                 } catch (err) {
@@ -1452,9 +1587,10 @@ module.exports = async function handler(req, res) {
             const filePath = `${bucket}/${name}`;
             (async () => {
               try {
-                const { processCreditReport } = require('./reportProcessor');
-                await processCreditReport(filePath);
+                const { processDocument } = require('./reportProcessor');
+                const result = await processDocument(filePath, null);
                 console.log('Processed storage object via Supabase webhook:', filePath);
+                // No direct DB save here because webhook may not include user_id; if you have user metadata, include it above
               } catch (err) {
                 console.error('Error processing storage object:', err);
               }
