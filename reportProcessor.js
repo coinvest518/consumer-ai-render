@@ -415,6 +415,13 @@ async function analyzeText(text) {
 
   const systemPrompt = `You are a credit report analysis expert. Analyze this ENTIRE credit report text and return ONLY a JSON object.
 
+CRITICAL ANALYSIS REQUIREMENTS:
+1. PERSONAL INFO: List ALL names, addresses, SSNs, DOBs found. If multiple versions exist, flag as identity issues.
+2. COLLECTION ACCOUNTS: Identify ANY account marked as "collection", "charged off", "sent to collections", or with collection agency names.
+3. INQUIRIES: Count and categorize ALL inquiries as hard pulls vs soft pulls. Show exact counts.
+4. ACCOUNT DETAILS: Extract complete info for EVERY account (name, number, balance, status, payment history).
+5. VIOLATIONS: Identify specific FCRA/FDCPA violations with exact evidence quotes.
+
 Extract and analyze ALL information including:
 - Every account name, number, creditor, balance, status
 - All collection agencies and their contact information  
@@ -424,38 +431,54 @@ Extract and analyze ALL information including:
 
 Return ONLY this JSON structure:
 {
-  "summary": "Comprehensive summary of all findings",
-  "personal_info_issues": [
-    {"type": "name/address/ssn/dob issue", "description": "Details", "evidence": "Exact quote", "severity": "high/medium/low"}
-  ],
-  "account_issues": [
-    {"account_name": "Full creditor name", "account_number": "Number", "status": "Status", "balance": "Balance", "issue_type": "Issue", "evidence": "Quote", "severity": "high/medium/low"}
-  ],
-  "collection_accounts": [
-    {
-      "creditor_name": "Original creditor",
-      "collection_agency": "Collection agency name and contact info if available",
-      "account_number": "Account number",
-      "original_balance": "Original amount",
-      "current_balance": "Current balance",
-      "fdpca_violations": [
-        {
-          "violation": "Specific FDCPA violation (e.g., time-barred debt, improper communication)",
-          "evidence": "Quote showing violation",
-          "severity": "high/medium/low"
-        }
-      ],
-      "recommendation": "Action to take regarding this collection"
-    }
-  ],
-  "inquiries": [
-    {
-      "creditor_name": "Who made the inquiry",
-      "date": "Date of inquiry",
-      "purpose": "Purpose if stated",
-      "issue": "Potential issue (too many, unauthorized, etc.)",
-      "evidence": "Quote from report"
-    }
+  "summary": "Comprehensive summary highlighting key issues and total counts",
+  "personal_info_analysis": {
+    "names_found": ["List every name variation found"],
+    "addresses_found": ["List every address found"],
+    "ssn_variations": ["List any SSN variations"],
+    "dob_variations": ["List any DOB variations"],
+    "identity_issues": [
+      {"type": "multiple_names|multiple_addresses|ssn_mismatch|dob_mismatch", "description": "Details", "evidence": "Exact quote", "severity": "high/medium/low"}
+    ]
+  },
+  "inquiry_analysis": {
+    "total_hard_pulls": 0,
+    "total_soft_pulls": 0,
+    "hard_pull_details": [
+      {"creditor_name": "Name", "date": "Date", "purpose": "Purpose", "evidence": "Quote"}
+    ],
+    "soft_pull_details": [
+      {"creditor_name": "Name", "date": "Date", "purpose": "Purpose", "evidence": "Quote"}
+    ],
+    "inquiry_issues": [
+      {"issue_type": "too_many_hard_pulls|unauthorized_inquiry|old_inquiry", "description": "Details", "evidence": "Quote", "severity": "high/medium/low"}
+    ]
+  },
+  "collection_accounts_analysis": {
+    "total_collections_found": 0,
+    "collection_accounts": [
+      {
+        "original_creditor": "Original creditor name",
+        "collection_agency": "Collection agency name and contact info",
+        "account_number": "Full or partial account number",
+        "original_balance": "Original amount owed",
+        "current_balance": "Current balance",
+        "date_opened": "Date account opened",
+        "date_of_first_delinquency": "DOFD if available",
+        "status": "Current status (collection, charged off, etc.)",
+        "payment_history": "Payment history details",
+        "fdcpa_violations": [
+          {"violation": "Specific FDCPA violation", "evidence": "Quote", "severity": "high/medium/low"}
+        ],
+        "fcra_violations": [
+          {"violation": "Specific FCRA violation", "evidence": "Quote", "severity": "high/medium/low"}
+        ],
+        "recommended_action": "Specific action to take"
+      }
+    ]
+  },
+  "regular_accounts": [
+    {"account_name": "Creditor name", "account_number": "Number", "account_type": "Credit card/loan/etc", "status": "Status", "balance": "Balance", "credit_limit": "Limit", "payment_history": "History", "issues": ["List any issues"], "evidence": "Quotes"}
   ],
   "fcra_violations": [
     {
@@ -469,11 +492,14 @@ Return ONLY this JSON structure:
     }
   ],
   "overall_assessment": {
-    "credit_score_impact": "high/medium/low negative impact",
-    "total_accounts_affected": 0,
+    "total_accounts": 0,
+    "total_collections": 0,
+    "total_hard_inquiries": 0,
+    "total_soft_inquiries": 0,
     "total_violations_found": 0,
+    "credit_score_impact": "high/medium/low negative impact",
     "overall_risk_level": "clean/minor_issues/significant_issues/serious_violations",
-    "priority_actions": ["List of top 3 actions to take"]
+    "priority_actions": ["Top 3 most important actions to take immediately"]
   },
   "dispute_letters_needed": [
     {
@@ -486,17 +512,14 @@ Return ONLY this JSON structure:
   ]
 }
 
-CRITICAL REQUIREMENTS:
-- Extract EVERY account name, number, creditor, balance, status from the text
-- Look for multiple addresses, names, SSNs - these are major identity issues
-- Identify all collection agencies and their contact information
-- Find all hard/soft inquiries and assess if excessive
-- Check for FCRA violations like outdated negative items (>7 years old)
-- Check FDCPA compliance for collection accounts
-- Include exact quotes as evidence for every finding
-- Be extremely thorough - analyze every line of the credit report
-- Sort issues by severity and impact
-- Return ONLY the JSON object`;
+IMPORTANT INSTRUCTIONS:
+- Count EVERY inquiry and categorize as hard/soft pull based on context
+- Identify ALL collection accounts even if not explicitly labeled (look for charged off, collection agency names, etc.)
+- List EVERY name/address variation found - multiple versions indicate identity issues
+- Extract complete account details including balances, limits, payment history
+- Provide exact quotes as evidence for every finding
+- Be thorough - analyze every section of the credit report
+- Return ONLY the JSON object with no additional text`;
 
   try {
     const { response } = await chatWithFallback([
@@ -509,7 +532,12 @@ CRITICAL REQUIREMENTS:
     console.log('AI Response:', analysisText.substring(0, 200) + '...');
     
     // Remove markdown code blocks if present
-    const jsonText = analysisText.replace(/```json\n?|\n?```/g, '').trim();
+    let jsonText = analysisText.replace(/```json\n?|\n?```/g, '').trim();
+    
+    // Handle cases where JSON is wrapped in extra quotes or has escape characters
+    if (jsonText.startsWith('"') && jsonText.endsWith('"')) {
+      jsonText = jsonText.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
 
     let parsed = null;
     try {
