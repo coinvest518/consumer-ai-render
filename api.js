@@ -1087,6 +1087,19 @@ module.exports = async function handler(req, res) {
       }
     }
 
+    // Test email access endpoint
+    if (path === 'test/email-access') {
+      if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+      
+      try {
+        const { testEmailAccess } = require('./test-email-access');
+        const results = await testEmailAccess();
+        return res.status(200).json({ success: true, results });
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
+      }
+    }
+
     // Admin DB schema & permissions check (server-side only)
     if (path === 'admin/db-check') {
       console.log('supabase object:', typeof supabase, supabase ? 'has rpc:' + typeof supabase.rpc : 'no supabase');
@@ -1556,6 +1569,30 @@ module.exports = async function handler(req, res) {
           const { table, event, record } = payload;
           console.log(`Supabase webhook: table=${table} event=${event}`);
 
+          // Trigger automation when automation_queue gets new tasks
+          if (table === 'automation_queue' && event === 'INSERT') {
+            // Process the automation queue immediately
+            setTimeout(async () => {
+              try {
+                await fetch(`${process.env.BASE_URL || 'http://localhost:3001'}/api/automation/process-queue`, {
+                  method: 'POST'
+                });
+              } catch (err) {
+                console.error('Failed to trigger automation processing:', err);
+              }
+            }, 2000); // 2 second delay
+          }
+          
+          // Handle certified_mail updates
+          if (table === 'certified_mail' && event === 'UPDATE') {
+            console.log('Mail status updated via webhook, automation will be triggered by database trigger');
+          }
+          
+          // Handle calendar_events inserts
+          if (table === 'calendar_events' && event === 'INSERT') {
+            console.log('New calendar event created, reminder automation scheduled by database trigger');
+          }
+
           // If a new file row is inserted, try to find a file path and trigger processing
           if (event === 'INSERT') {
             const filePath = record.file_path || record.path || record.name || record.object_key || record.url;
@@ -1871,6 +1908,280 @@ module.exports = async function handler(req, res) {
       } catch (err) {
         console.error('Unexpected error fetching storage limits:', err);
         return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // Simple user action endpoints
+    if (path === 'user-actions/mailed-letter' && req.method === 'POST') {
+      const { userId, letterType, mailedDate, recipient } = req.body;
+      if (!userId || !mailedDate) return res.status(400).json({ error: 'Missing userId or mailedDate' });
+      
+      try {
+        // 1. Save to database
+        await supabase.from('certified_mail').insert({
+          user_id: userId,
+          recipient: recipient || 'Credit Bureau',
+          description: `${letterType || 'Dispute'} letter mailed`,
+          date_mailed: mailedDate,
+          status: 'mailed',
+          tracking_number: `PENDING-${Date.now()}`
+        });
+        
+        // 2. Calculate deadline (30 days from mail date)
+        const deadline = new Date(mailedDate);
+        deadline.setDate(deadline.getDate() + 30);
+        
+        // 3. Create reminder
+        await supabase.from('calendar_events').insert({
+          user_id: userId,
+          title: `Follow up on ${letterType || 'dispute'} letter`,
+          description: `30-day deadline to receive response`,
+          event_date: deadline.toISOString(),
+          event_type: 'deadline',
+          related_type: 'certified_mail'
+        });
+        
+        // 4. Send confirmation email (if email configured)
+        if (process.env.SMTP_HOST) {
+          const { sendEmailTool } = require('./emailTools');
+          await sendEmailTool.invoke(JSON.stringify({
+            to: 'user@example.com', // Replace with actual user email
+            subject: 'Letter Tracking Confirmed',
+            body: `Your ${letterType || 'dispute'} letter mailed on ${mailedDate} is now being tracked. Follow-up deadline: ${deadline.toDateString()}`
+          }));
+        }
+        
+        return res.status(200).json({ 
+          success: true, 
+          message: 'Letter tracked and reminder set',
+          deadline: deadline.toISOString()
+        });
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
+      }
+    }
+    
+    if (path === 'user-actions/set-reminder' && req.method === 'POST') {
+      const { userId, title, days, description } = req.body;
+      if (!userId || !title || !days) return res.status(400).json({ error: 'Missing required fields' });
+      
+      try {
+        const reminderDate = new Date();
+        reminderDate.setDate(reminderDate.getDate() + parseInt(days));
+        
+        await supabase.from('calendar_events').insert({
+          user_id: userId,
+          title: title,
+          description: description || 'User reminder',
+          event_date: reminderDate.toISOString(),
+          event_type: 'reminder'
+        });
+        
+        return res.status(200).json({ 
+          success: true, 
+          message: 'Reminder set',
+          reminderDate: reminderDate.toISOString()
+        });
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
+      }
+    }
+    
+    if (path === 'user-actions/get-timeline' && req.method === 'GET') {
+      const userId = req.query.userId;
+      if (!userId) return res.status(400).json({ error: 'Missing userId' });
+      
+      try {
+        const { data: events } = await supabase
+          .from('calendar_events')
+          .select('*')
+          .eq('user_id', userId)
+          .gte('event_date', new Date().toISOString())
+          .order('event_date', { ascending: true })
+          .limit(10);
+          
+        return res.status(200).json({ events: events || [] });
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
+      }
+    }
+    
+    // Auto-generate follow-up email
+    if (path === 'user-actions/auto-followup' && req.method === 'POST') {
+      const { userId, disputeId } = req.body;
+      if (!userId || !disputeId) return res.status(400).json({ error: 'Missing userId or disputeId' });
+      
+      try {
+        // Check user credits
+        const { data: userMetrics } = await supabase
+          .from('user_metrics')
+          .select('daily_limit, chats_used')
+          .eq('user_id', userId)
+          .single();
+          
+        const creditsLeft = (userMetrics?.daily_limit || 5) - (userMetrics?.chats_used || 0);
+        if (creditsLeft < 5) {
+          return res.status(400).json({ error: 'Insufficient credits. Need 5 credits.' });
+        }
+        
+        // Get dispute details
+        const { data: dispute } = await supabase
+          .from('disputes')
+          .select('*')
+          .eq('id', disputeId)
+          .eq('user_id', userId)
+          .single();
+          
+        if (!dispute) {
+          return res.status(404).json({ error: 'Dispute not found' });
+        }
+        
+        // Generate follow-up letter using AI
+        const aiPrompt = `Generate a professional FCRA follow-up letter for:
+        - Dispute: ${dispute.title}
+        - Bureau: ${dispute.bureau}
+        - Date sent: ${dispute.date_sent}
+        - Tracking: ${dispute.tracking_number}
+        
+        Make it firm but professional. Reference the 30-day investigation period.`;
+        
+        const { chatWithFallback } = require('./aiUtils');
+        const { response } = await chatWithFallback([{ content: aiPrompt }]);
+        
+        // Send email with generated letter
+        if (process.env.SMTP_HOST) {
+          const { sendEmailTool } = require('./emailTools');
+          await sendEmailTool.invoke(JSON.stringify({
+            to: 'user@example.com', // Replace with actual user email
+            subject: `Follow-up Letter for ${dispute.title}`,
+            body: `<h3>Your Follow-up Letter</h3><pre>${response.content}</pre><p><strong>Instructions:</strong> Print this letter and send via certified mail to ${dispute.bureau}.</p>`
+          }));
+        }
+        
+        // Log email sent
+        await supabase.rpc('log_email_sent', {
+          p_user_id: userId,
+          p_email_type: 'followup_letter',
+          p_recipient_email: 'user@example.com',
+          p_subject: `Follow-up Letter for ${dispute.title}`,
+          p_related_id: disputeId,
+          p_related_type: 'dispute',
+          p_credits_charged: 5
+        });
+        
+        // Deduct credits
+        await supabase
+          .from('user_metrics')
+          .update({ chats_used: (userMetrics?.chats_used || 0) + 5 })
+          .eq('user_id', userId);
+          
+        return res.status(200).json({ 
+          success: true, 
+          message: 'Follow-up letter generated and sent',
+          creditsUsed: 5,
+          creditsRemaining: creditsLeft - 5
+        });
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
+      }
+    }
+    
+    // Process automation queue (triggered by user actions or webhooks)
+    if (path === 'automation/process-queue' && req.method === 'POST') {
+      try {
+        // Get tasks ready for API processing
+        const { data: tasks } = await supabase
+          .from('automation_queue')
+          .select('*')
+          .eq('status', 'ready_for_api')
+          .limit(10);
+        
+        let processedCount = 0;
+        for (const task of tasks || []) {
+          try {
+            if (task.task_type === 'send_delivery_notification') {
+              // Send delivery notification
+              const { sendEmailTool } = require('./emailTools');
+              await sendEmailTool.invoke(JSON.stringify({
+                to: 'user@example.com', // Get from user profile
+                subject: 'Mail Delivered - Deadlines Created',
+                body: `Your certified mail (${task.metadata.tracking_number}) was delivered. We've automatically created your 30-day deadline reminders.`
+              }));
+              
+            } else if (task.task_type === 'send_reminder_email') {
+              // Send reminder email
+              const { sendEmailTool } = require('./emailTools');
+              await sendEmailTool.invoke(JSON.stringify({
+                to: 'user@example.com', // Get from user profile
+                subject: `Reminder: ${task.metadata.event_title}`,
+                body: `<h3>${task.metadata.event_title}</h3><p>${task.metadata.event_description}</p><p><strong>Due:</strong> ${new Date(task.metadata.event_date).toLocaleDateString()}</p>`
+              }));
+            }
+            
+            // Mark task as completed
+            await supabase
+              .from('automation_queue')
+              .update({ 
+                status: 'completed', 
+                completed_at: new Date().toISOString() 
+              })
+              .eq('id', task.id);
+              
+            processedCount++;
+            
+          } catch (taskError) {
+            // Mark task as failed
+            await supabase
+              .from('automation_queue')
+              .update({ 
+                status: 'failed', 
+                error_message: taskError.message 
+              })
+              .eq('id', task.id);
+          }
+        }
+        
+        return res.status(200).json({ 
+          success: true, 
+          processed: processedCount
+        });
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
+      }
+    }
+    
+    // Trigger automation when user updates mail status
+    if (path === 'user-actions/update-mail-status' && req.method === 'POST') {
+      const { userId, mailId, status, deliveryDate } = req.body;
+      
+      try {
+        // Update mail status
+        await supabase
+          .from('certified_mail')
+          .update({ 
+            status: status,
+            date_delivered: deliveryDate,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', mailId)
+          .eq('user_id', userId);
+        
+        // Process any triggered automation
+        await supabase.rpc('process_automation_queue');
+        
+        // Immediately process the queue
+        setTimeout(async () => {
+          await fetch(`${req.protocol}://${req.get('host')}/api/automation/process-queue`, {
+            method: 'POST'
+          });
+        }, 1000);
+        
+        return res.status(200).json({ 
+          success: true, 
+          message: 'Mail status updated and automation triggered'
+        });
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
       }
     }
 
