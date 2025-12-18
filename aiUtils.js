@@ -36,13 +36,30 @@ if (googleApiKey) {
   }
 }
 
-// Initialize Mistral
+// Initialize Mistral (with backup key)
 const mistralApiKey = process.env.MISTRAL_API_KEY;
+const mistralApiKeyBackup = process.env.MISTRAL_API_KEY_BACKUP;
+let mistralClient2 = null;
+
+console.log('Mistral API Keys Status:');
+console.log('- Primary key:', mistralApiKey ? 'Set' : 'Not set');
+console.log('- Backup key:', mistralApiKeyBackup ? 'Set' : 'Not set');
+
 if (mistralApiKey) {
   try {
     mistralClient = new Mistral({ apiKey: mistralApiKey });
+    console.log('Mistral primary client initialized successfully');
   } catch (error) {
     console.error('Failed to initialize Mistral AI client:', error.message);
+  }
+}
+
+if (mistralApiKeyBackup) {
+  try {
+    mistralClient2 = new Mistral({ apiKey: mistralApiKeyBackup });
+    console.log('Mistral backup client initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize Mistral AI backup client:', error.message);
   }
 }
 
@@ -74,9 +91,9 @@ if (muleRouterApiKey) {
   }
 }
 
-// Fallback chat function: prefer Mistral → Hugging Face → MuleRouter → Google
+// Fallback chat function: prefer Mistral → Mistral2 → Hugging Face → MuleRouter → Google
 async function chatWithFallback(messages) {
-  // 1) Mistral
+  // 1) Mistral Primary
   if (mistralClient) {
     try {
       console.log('Attempting chat with Mistral (primary)');
@@ -99,11 +116,38 @@ async function chatWithFallback(messages) {
       console.log('Mistral response successful');
       return { response: { content }, model: 'mistral' };
     } catch (error) {
-      console.warn('Mistral failed, continuing fallbacks:', error.message);
+      console.warn('Mistral primary failed, trying backup:', error.message);
     }
   }
 
-  // 2) Hugging Face
+  // 2) Mistral Backup
+  if (mistralClient2) {
+    try {
+      console.log('Attempting chat with Mistral (backup)');
+      const mistralMessages = messages.map(msg => {
+        if (msg instanceof SystemMessage) return { role: 'system', content: msg.content };
+        if (msg instanceof HumanMessage) return { role: 'user', content: msg.content };
+        if (msg instanceof AIMessage) return { role: 'assistant', content: msg.content };
+        return { role: 'user', content: msg.content };
+      });
+
+      const mistralResponse = await mistralClient2.chat.complete({
+        model: 'mistral-small-latest',
+        messages: mistralMessages,
+        temperature: 0.7,
+        max_tokens: 2048,
+        stream: false
+      });
+
+      const content = mistralResponse.choices?.[0]?.message?.content || 'No content from Mistral backup.';
+      console.log('Mistral backup response successful');
+      return { response: { content }, model: 'mistral-backup' };
+    } catch (error) {
+      console.warn('Mistral backup failed, continuing fallbacks:', error.message);
+    }
+  }
+
+  // 3) Hugging Face
   if (hfClient) {
     try {
       console.log('Attempting chat with Hugging Face (secondary)');
@@ -130,7 +174,7 @@ async function chatWithFallback(messages) {
     }
   }
 
-  // 3) MuleRouter (Qwen)
+  // 4) MuleRouter (Qwen)
   if (muleRouterClient) {
     try {
       console.log('Attempting chat with MuleRouter (Qwen) (tertiary)');
@@ -157,7 +201,7 @@ async function chatWithFallback(messages) {
     }
   }
 
-  // 4) Google Gemini (last resort)
+  // 5) Google Gemini (last resort)
   if (chatModel) {
     try {
       console.log('Attempting chat with Google Gemini (last resort)');
