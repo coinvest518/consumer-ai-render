@@ -84,18 +84,11 @@ if (process.env.SUPABASE_POSTGRES_URL) {
   } catch (error) {
     console.warn('Failed to configure PostgreSQL pool from SUPABASE_POSTGRES_URL:', error.message);
   }
-} else if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  try {
-    // Fallback: try to parse SUPABASE_URL and use service role key as password (best-effort)
-    const url = new URL(process.env.SUPABASE_URL);
-    const host = url.hostname;
-    const pathname = url.pathname.replace('/', '') || 'postgres';
-    const ssl = { rejectUnauthorized: false };
-    pgPool = new Pool({ host, port: 5432, database: pathname, user: 'postgres', password: process.env.SUPABASE_SERVICE_ROLE_KEY, ssl });
-    console.log('PostgreSQL pool configured from SUPABASE_URL fallback');
-  } catch (error) {
-    console.warn('Failed to configure PostgreSQL pool from SUPABASE_URL fallback:', error.message);
-  }
+} else {
+  // No direct Postgres connection configured. Do NOT attempt to derive DB host
+  // from SUPABASE_URL (that is an HTTP endpoint); prefer the Supabase HTTP
+  // client fallback which writes to `chat_history` via the Supabase REST API.
+  console.log('No SUPABASE_POSTGRES_URL set — skipping direct Postgres pool configuration (using Supabase HTTP fallback).');
 }
 
 // Initialize Google AI with Gemini 2.5 Flash model
