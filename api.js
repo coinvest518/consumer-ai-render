@@ -1528,8 +1528,20 @@ module.exports = async function handler(req, res) {
       }
 
       try {
+        console.log('📋 Processing credit report:', filePath);
         const { processCreditReport } = require('./reportProcessor');
         const result = await processCreditReport(filePath);
+        
+        // Log analysis field counts
+        if (result.analysis) {
+          console.log('📊 API: Analysis has fields:');
+          console.log('  - personal_info_issues:', (result.analysis.personal_info_issues || []).length);
+          console.log('  - account_issues:', (result.analysis.account_issues || []).length);
+          console.log('  - inquiries:', (result.analysis.inquiries || []).length);
+          console.log('  - collection_accounts:', (result.analysis.collection_accounts || []).length);
+          console.log('  - fcra_violations:', (result.analysis.fcra_violations || []).length);
+          console.log('  - dispute_letters_needed:', (result.analysis.dispute_letters_needed || []).length);
+        }
         
         // Store analysis result in database if needed
         if (supabase && userId) {
@@ -1540,12 +1552,54 @@ module.exports = async function handler(req, res) {
             analysis: result.analysis,
             processed_at: result.processedAt || new Date().toISOString()
           });
+          console.log('✅ Analysis stored in database');
         }
 
         return res.status(200).json(result);
       } catch (error) {
-        console.error('Report analysis error:', error);
+        console.error('❌ Report analysis error:', error);
         return res.status(500).json({ error: error.message });
+      }
+    }
+    
+    // Debug endpoint: Get last analysis with full breakdown
+    if (path === 'debug/last-analysis') {
+      if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+      
+      const userId = req.query.userId || req.query.user_id;
+      if (!userId) return res.status(400).json({ error: 'Missing userId' });
+      
+      try {
+        const { data } = await supabase
+          .from('report_analyses')
+          .select('*')
+          .eq('user_id', userId)
+          .order('processed_at', { ascending: false })
+          .limit(1);
+        
+        if (!data || data.length === 0) {
+          return res.status(404).json({ error: 'No analysis found' });
+        }
+        
+        const analysis = data[0].analysis;
+        return res.status(200).json({
+          processed_at: data[0].processed_at,
+          file_path: data[0].file_path,
+          field_counts: {
+            summary: !!analysis.summary,
+            personal_info_issues: (analysis.personal_info_issues || []).length,
+            account_issues: (analysis.account_issues || []).length,
+            inquiries: (analysis.inquiries || []).length,
+            collection_accounts: (analysis.collection_accounts || []).length,
+            fcra_violations: (analysis.fcra_violations || []).length,
+            overall_assessment: !!analysis.overall_assessment,
+            dispute_letters_needed: (analysis.dispute_letters_needed || []).length
+          },
+          full_analysis: analysis
+        });
+      } catch (err) {
+        console.error('debug error:', err.message);
+        return res.status(500).json({ error: err.message });
       }
     }
 

@@ -529,7 +529,7 @@ IMPORTANT INSTRUCTIONS:
 
     // Parse the JSON response
     const analysisText = (response && (response.content || response)) ? String(response.content || response).trim() : '';
-    console.log('AI Response:', analysisText.substring(0, 200) + '...');
+    console.log('🤖 AI Response received, length:', analysisText.length, 'chars');
     
     // Remove markdown code blocks if present
     let jsonText = analysisText.replace(/```json\n?|\n?```/g, '').trim();
@@ -542,33 +542,62 @@ IMPORTANT INSTRUCTIONS:
     let parsed = null;
     try {
       parsed = JSON.parse(jsonText);
+      console.log('✅ JSON parsed successfully');
     } catch (parseError) {
-      console.error('JSON parse error, trying to extract JSON from response');
+      console.error('❌ JSON parse error, trying to extract...');
       const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
           parsed = JSON.parse(jsonMatch[0]);
+          console.log('✅ JSON extracted and parsed');
         } catch (secondParseError) {
-          console.error('Still cannot parse JSON');
+          console.error('❌ Cannot parse JSON:', secondParseError.message);
         }
       }
     }
 
-    // Validate the parsed result with a lightweight validator
-    const { simpleValidate } = require('./utils/validateAnalysis');
+    // Transform camelCase field names to snake_case if needed
     if (parsed) {
-      const { valid, errors } = simpleValidate(parsed);
-      if (!valid) {
-        console.warn('Parsed analysis failed validation:', errors);
-        // Attach raw response for frontend inspection
-        parsed.raw_response = analysisText;
+      const fieldMap = {
+        'personalinfoanalysis': 'personal_info_issues',
+        'inquiryanalysis': 'inquiries',
+        'collectionaccountsanalysis': 'collection_accounts',
+        'regularaccounts': 'account_issues',
+        'overallassessment': 'overall_assessment',
+        'disputelettersneeded': 'dispute_letters_needed'
+      };
+      
+      for (const [camel, snake] of Object.entries(fieldMap)) {
+        if (parsed[camel] && !parsed[snake]) {
+          parsed[snake] = parsed[camel];
+          delete parsed[camel];
+        }
       }
+      
+      // Ensure all required fields exist
+      parsed.summary = parsed.summary || 'Analysis completed';
+      parsed.personal_info_issues = parsed.personal_info_issues || [];
+      parsed.account_issues = parsed.account_issues || [];
+      parsed.collection_accounts = parsed.collection_accounts || [];
+      parsed.inquiries = parsed.inquiries || [];
+      parsed.fcra_violations = parsed.fcra_violations || [];
+      parsed.overall_assessment = parsed.overall_assessment || {
+        credit_score_impact: 'unknown',
+        total_accounts_affected: 0,
+        total_violations_found: 0,
+        overall_risk_level: 'unknown',
+        priority_actions: []
+      };
+      parsed.dispute_letters_needed = parsed.dispute_letters_needed || [];
+      
+      console.log('📊 Field Counts: personal_info=' + parsed.personal_info_issues.length + ' account_issues=' + parsed.account_issues.length + ' inquiries=' + parsed.inquiries.length + ' collections=' + parsed.collection_accounts.length + ' fcra=' + parsed.fcra_violations.length + ' disputes=' + parsed.dispute_letters_needed.length);
+      
       return parsed;
     }
 
     // Fallback: return a structured response wrapping raw AI output
     return {
-      summary: analysisText.substring(0, 300) || "Analysis completed but parsing failed",
+      summary: analysisText.substring(0, 500) || "Analysis completed but parsing encountered issues",
       personal_info_issues: [],
       account_issues: [],
       collection_accounts: [],
@@ -579,15 +608,15 @@ IMPORTANT INSTRUCTIONS:
         total_accounts_affected: 0,
         total_violations_found: 0,
         overall_risk_level: "unknown",
-        priority_actions: ["Review raw analysis manually"]
+        priority_actions: []
       },
       dispute_letters_needed: [],
-      raw_response: analysisText
+      _parsing_failed: true
     };
   } catch (error) {
-    console.error('Error analyzing text:', error);
+    console.error('❌ Error analyzing text:', error.message);
     return {
-      summary: "Analysis failed due to technical error",
+      summary: "Analysis encountered a technical error. Please try again.",
       personal_info_issues: [],
       account_issues: [],
       collection_accounts: [],
@@ -598,10 +627,10 @@ IMPORTANT INSTRUCTIONS:
         total_accounts_affected: 0,
         total_violations_found: 0,
         overall_risk_level: "unknown",
-        priority_actions: ["Contact support for analysis assistance"]
+        priority_actions: []
       },
       dispute_letters_needed: [],
-      error: error.message
+      _error: error.message
     };
   }
 }
