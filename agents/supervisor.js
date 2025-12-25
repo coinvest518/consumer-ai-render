@@ -81,132 +81,6 @@ async function callAI(messages) {
 // Simple delay function
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// Format analysis as HTML for frontend display
-function formatAnalysisAsHTML(analysis) {
-  if (!analysis) return 'No analysis available';
-  
-  const escapeHtml = (str) => String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  
-  let html = `<div class="credit-analysis">`;
-  
-  // Executive Summary
-  html += `<div class="executive-summary">`;
-  html += `<h2>Executive Summary</h2>`;
-  html += `<p>${escapeHtml(analysis.summary || 'Analysis completed')}</p>`;
-  html += `</div>`;
-  
-  // Personal Information Issues
-  if (analysis.personal_info_issues?.length > 0 || analysis.personalinfoanalysis?.identityissues?.length > 0) {
-    const issues = analysis.personal_info_issues || analysis.personalinfoanalysis?.identityissues || [];
-    html += `<div class="personal-issues">`;
-    html += `<h2>Personal Information Issues</h2>`;
-    issues.forEach(issue => {
-      const severity = issue.severity || 'medium';
-      html += `<div class="issue-item ${severity}">`;
-      html += `<h3>${escapeHtml(issue.type || 'Issue')} <span class="severity ${severity}">${severity.toUpperCase()}</span></h3>`;
-      html += `<p><strong>Issue:</strong> ${escapeHtml(issue.description || '')}</p>`;
-      if (issue.evidence) html += `<p class="evidence"><strong>Evidence:</strong> ${escapeHtml(issue.evidence)}</p>`;
-      html += `</div>`;
-    });
-    html += `</div>`;
-  }
-  
-  // Account Issues
-  if (analysis.account_issues?.length > 0 || analysis.regularaccounts?.length > 0) {
-    const accounts = analysis.account_issues || analysis.regularaccounts || [];
-    html += `<div class="account-issues">`;
-    html += `<h2>Account Issues (${accounts.length})</h2>`;
-    accounts.slice(0, 10).forEach(account => {
-      const severity = account.severity || 'medium';
-      html += `<div class="account-item">`;
-      html += `<h3>${escapeHtml(account.account_name || account.accountname || 'Unknown Account')}</h3>`;
-      html += `<p><strong>Account #:</strong> ${escapeHtml(account.account_number || account.accountnumber || 'Not specified')}</p>`;
-      html += `<p><strong>Status:</strong> ${escapeHtml(account.status || 'Unknown')} <span class="severity ${severity}">${severity.toUpperCase()}</span></p>`;
-      html += `<p><strong>Issue:</strong> ${escapeHtml(account.issue_type || account.issuetype || account.description || '')}</p>`;
-      if (account.evidence) html += `<p class="evidence">${escapeHtml(account.evidence)}</p>`;
-      html += `</div>`;
-    });
-    html += `</div>`;
-  }
-  
-  // Collection Accounts
-  if (analysis.collection_accounts?.length > 0 || analysis.collectionaccountsanalysis?.collectionaccounts?.length > 0) {
-    const collections = analysis.collection_accounts || analysis.collectionaccountsanalysis?.collectionaccounts || [];
-    html += `<div class="collection-accounts">`;
-    html += `<h2>Collection Accounts</h2>`;
-    collections.slice(0, 5).forEach(account => {
-      html += `<div class="collection-item">`;
-      html += `<h3>${escapeHtml(account.collection_agency || account.collectionagency || 'Unknown Agency')}</h3>`;
-      html += `<p><strong>Original Creditor:</strong> ${escapeHtml(account.original_creditor || account.originalcreditor || 'Not specified')}</p>`;
-      html += `<p><strong>Balance:</strong> ${escapeHtml(account.current_balance || account.currentbalance || 'Not specified')}</p>`;
-      html += `</div>`;
-    });
-    html += `</div>`;
-  }
-  
-  // FCRA Violations
-  if (analysis.fcra_violations?.length > 0 || analysis.fcraviolations?.length > 0) {
-    const violations = analysis.fcra_violations || analysis.fcraviolations || [];
-    html += `<div class="fcra-violations">`;
-    html += `<h2>FCRA Violations (${violations.length})</h2>`;
-    violations.slice(0, 5).forEach(violation => {
-      const severity = violation.severity || 'medium';
-      html += `<div class="violation-item ${severity}">`;
-      html += `<h3>${escapeHtml(violation.violation_type || violation.violationtype || 'Violation')} <span class="severity ${severity}">${severity.toUpperCase()}</span></h3>`;
-      html += `<p><strong>Description:</strong> ${escapeHtml(violation.description || '')}</p>`;
-      if (violation.evidence) html += `<p class="evidence"><strong>Evidence:</strong> ${escapeHtml(violation.evidence)}</p>`;
-      html += `<p><strong>Strategy:</strong> ${escapeHtml(violation.dispute_strategy || violation.disputestrategy || '')}</p>`;
-      html += `</div>`;
-    });
-    html += `</div>`;
-  }
-  
-  // Overall Assessment
-  const overall = analysis.overall_assessment || analysis.overallassessment || {};
-  html += `<div class="overall-assessment">`;
-  html += `<h2>Overall Assessment</h2>`;
-  html += `<div class="assessment-grid">`;
-  html += `<div class="metric"><strong>Risk Level:</strong> ${escapeHtml(overall.overall_risk_level || overall.overallrisklevel || 'unknown')}</div>`;
-  html += `<div class="metric"><strong>Credit Impact:</strong> ${escapeHtml(overall.credit_score_impact || overall.creditscoreimpact || 'unknown')}</div>`;
-  html += `<div class="metric"><strong>Accounts Affected:</strong> ${overall.total_accounts_affected || overall.totalaccountsaffected || 0}</div>`;
-  html += `</div>`;
-  
-  if (overall.priority_actions?.length > 0 || overall.priorityactions?.length > 0) {
-    const actions = overall.priority_actions || overall.priorityactions || [];
-    html += `<h3>Priority Actions:</h3><ul>`;
-    actions.slice(0, 5).forEach(action => {
-      html += `<li>${escapeHtml(action)}</li>`;
-    });
-    html += `</ul>`;
-  }
-  html += `</div>`;
-  
-  // Suggested Dispute Letters
-  if (analysis.dispute_letters_needed?.length > 0 || analysis.disputelettersneeded?.length > 0) {
-    const letters = analysis.dispute_letters_needed || analysis.disputelettersneeded || [];
-    html += `<div class="dispute-letters">`;
-    html += `<h2>Suggested Dispute Letters</h2>`;
-    letters.slice(0, 5).forEach(letter => {
-      html += `<div class="letter-item">`;
-      html += `<h3>${escapeHtml(letter.type || 'Letter')} • Target: ${escapeHtml(letter.target || 'Unknown')}</h3>`;
-      if (letter.accounts_involved?.length > 0 || letter.accountsinvolved?.length > 0) {
-        const accounts = letter.accounts_involved || letter.accountsinvolved || [];
-        html += `<p><strong>Accounts:</strong> ${accounts.map(escapeHtml).join(', ')}</p>`;
-      }
-      if (letter.evidence_needed?.length > 0 || letter.evidenceneeded?.length > 0) {
-        const evidence = letter.evidence_needed || letter.evidenceneeded || [];
-        html += `<p><strong>Evidence Required:</strong> ${evidence.map(escapeHtml).join(', ')}</p>`;
-      }
-      html += `<p><strong>Timeline:</strong> ${escapeHtml(letter.timeline || 'Within 30 days')}</p>`;
-      html += `</div>`;
-    });
-    html += `</div>`;
-  }
-  
-  html += `</div>`;
-  return html;
-}
-
 // Define agents
 const members = ['search', 'report', 'letter', 'legal', 'email', 'calendar'];
 
@@ -245,10 +119,10 @@ async function supervisor(state) {
     console.log('[Supervisor] supabase available:', !!state.supabase);
     
     // Priority routing for specific requests
-    // High priority for document analysis - ONLY for specific analysis requests
-    if ((message.includes('analyze my') || message.includes('review my') || message.includes('my report')) ||
-        (message.includes('analyze') && (message.includes('report') || message.includes('document') || message.includes('uploaded'))) ||
-        (message.includes('review') && (message.includes('report') || message.includes('document') || message.includes('uploaded')))) {
+    // High priority for document analysis - ONLY for specific analysis requests with possessive pronouns
+    if ((message.includes('analyze my') || message.includes('review my') || message.includes('check my report')) ||
+        (message.includes('analyze') && message.includes('my') && (message.includes('report') || message.includes('document') || message.includes('uploaded'))) ||
+        (message.includes('review') && message.includes('my') && (message.includes('report') || message.includes('document') || message.includes('uploaded')))) {
       console.log('[Supervisor] Routing to report agent');
       return { next: 'report' };
     }
@@ -443,7 +317,7 @@ async function reportAgent(state) {
                       const analysis = result.analysis;
                       console.log(`[ReportAgent] DB-pending file processed successfully: ${p}`);
                       return {
-                        messages: [new HumanMessage({ content: formatAnalysisAsHTML(analysis), name: 'ReportAgent' })],
+                        messages: [new HumanMessage({ content: JSON.stringify(analysis), name: 'ReportAgent' })],
                       };
                     }
                   }
@@ -459,7 +333,7 @@ async function reportAgent(state) {
                 const analysis = result.analysis;
                 console.log(`[ReportAgent] DB-pending file processed successfully: ${candidatePath}`);
                 return {
-                  messages: [new HumanMessage({ content: formatAnalysisAsHTML(analysis), name: 'ReportAgent' })],
+                  messages: [new HumanMessage({ content: JSON.stringify(analysis), name: 'ReportAgent' })],
                 };
               }
             }
@@ -562,7 +436,7 @@ async function reportAgent(state) {
         // Return the full analysis immediately
         const response = {
           messages: [new HumanMessage({ 
-            content: formatAnalysisAsHTML(analysis), 
+            content: JSON.stringify(analysis), 
             name: 'ReportAgent' 
           })],
         };
@@ -607,7 +481,7 @@ async function reportAgent(state) {
       const { processCreditReport } = require('../reportProcessor');
       const result = await processCreditReport(filePath);
       return {
-        messages: [new HumanMessage({ content: formatAnalysisAsHTML(result.analysis, null, 2), name: 'ReportAgent' })],
+        messages: [new HumanMessage({ content: JSON.stringify(result.analysis, null, 2), name: 'ReportAgent' })],
       };
     } catch (error) {
       return {

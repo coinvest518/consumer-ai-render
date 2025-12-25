@@ -6,7 +6,6 @@ const { Mistral } = require('@mistralai/mistralai');
 const { PostgresChatMessageHistory } = require('@langchain/community/stores/message/postgres');
 const { RunnableWithMessageHistory } = require('@langchain/core/runnables');
 const { ChatPromptTemplate, MessagesPlaceholder } = require('@langchain/core/prompts');
-const { ChatOpenAI } = require('@langchain/openai');
 const Stripe = require('stripe');
 const { Pool } = require('pg');
 
@@ -46,8 +45,8 @@ try {
   graph = null;
 }
 
-// Import AI utilities
-const { chatWithFallback } = require('./aiUtils');
+// Import AI utilities (use `let` so tests can override the implementation)
+let chatWithFallback = require('./aiUtils').chatWithFallback;
 
 // Initialize Supabase client (optional)
 let supabase = null;
@@ -215,6 +214,85 @@ const chatStores = new Map(); // For LangChain message history stores
 const responseCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
+// Ensure a chat message store exists for a session. Prefer PostgresChatMessageHistory when
+// `pgPool` is available; otherwise provide a lightweight Supabase-backed wrapper that
+// exposes `addMessages(messages)` to keep existing callsites working.
+async function ensureChatStore(sessionId, userId = null) {
+  if (chatStores.has(sessionId)) return chatStores.get(sessionId);
+
+  // Try to initialize LangChain PostgresChatMessageHistory when possible
+  if (typeof PostgresChatMessageHistory !== 'undefined' && pgPool) {
+    try {
+      let instance;
+      try {
+        // Prefer object-style constructor if available
+        instance = new PostgresChatMessageHistory({ pool: pgPool });
+      } catch (err) {
+        // Fallback to positional constructor
+        instance = new PostgresChatMessageHistory(pgPool);
+      }
+
+      // If the instance has an `addMessages` method, use it directly
+      if (instance && typeof instance.addMessages === 'function') {
+        chatStores.set(sessionId, instance);
+        return instance;
+      }
+    } catch (err) {
+      console.warn('Failed to initialize PostgresChatMessageHistory:', err && err.message ? err.message : err);
+    }
+  }
+
+  // Fallback wrapper that inserts into Supabase `chat_history` table if available.
+  const wrapper = {
+    addMessages: async (messages) => {
+      if (!messages || messages.length === 0) return;
+
+      // Normalize messages into rows for `chat_history`
+      const rows = messages.map((m) => {
+        // messages may be instances of HumanMessage/AIMessage or simple objects
+        const content = m.content || m.text || m.message || (typeof m === 'string' ? m : '');
+        let role = m.role || m.type || null;
+        if (!role) {
+          // Try to detect by constructor name
+          try {
+            if (m && m.constructor && m.constructor.name === 'HumanMessage') role = 'user';
+            else if (m && m.constructor && m.constructor.name === 'AIMessage') role = 'assistant';
+          } catch (e) {}
+        }
+        role = role === 'assistant' || role === 'ai' || role === 'system' ? 'assistant' : 'user';
+
+        return {
+          session_id: sessionId,
+          user_id: userId || null,
+          role,
+          message: String(content || ''),
+          created_at: new Date().toISOString()
+        };
+      });
+
+      if (supabase) {
+        try {
+          await supabase.from('chat_history').insert(rows);
+        } catch (err) {
+          console.error('Failed to save chat messages via Supabase fallback:', err && err.message ? err.message : err);
+        }
+      } else {
+        // If no persistent backend, keep messages in-memory (best-effort)
+        try {
+          const session = chatSessions.get(sessionId) || [];
+          rows.forEach(r => session.push(new HumanMessage(r.message)));
+          chatSessions.set(sessionId, session);
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+  };
+
+  chatStores.set(sessionId, wrapper);
+  return wrapper;
+}
+
 // Simple response caching
 function getCachedResponse(message) {
   const key = message.toLowerCase().trim();
@@ -288,10 +366,10 @@ function detectAgentNeed(message) {
   
   // Document analysis triggers (high priority) - includes access questions
   const documentTriggers = [
-    'analyze my', 'review my', 'my report', 'my credit report', 'my document',
-    'my uploaded', 'my file', 'check my report', 'look at my report',
-    'get my report', 'see my report', 'find my report',
-    'show me my', 'pull up my', 'retrieve my'
+    'analyze my credit report', 'review my credit report', 'review my credit report', 
+    'my uploaded report', 'my credit file', 'check my credit report', 'look at my credit report',
+    'get my credit report', 'd you see my credit report', 'find my credit report',
+    'show me my', 'pull up my credit report', 'retrieve my credit report',
   ];
   // Other specific agent triggers
   const otherTriggers = [
@@ -396,6 +474,13 @@ async function getChatHistory(sessionId, userId = null) {
     }
     
     chatSessions.set(sessionId, history);
+    // Ensure a message history store is available for this session
+    try {
+      // best-effort - do not block history creation on store initialization
+      ensureChatStore(sessionId, userId).catch(err => console.warn('ensureChatStore error:', err && err.message ? err.message : err));
+    } catch (e) {
+      console.warn('ensureChatStore call failed:', e && e.message ? e.message : e);
+    }
   }
   return chatSessions.get(sessionId);
 }
@@ -1051,25 +1136,72 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    // Test endpoint
-    if (path === 'test') {
-      return res.status(200).json({ 
-        message: 'Backend is working!',
-        timestamp: new Date().toISOString(),
-        env: {
-          hasAnthropic: !!process.env.ANTHROPIC_API_KEY,
-          hasGoogleAI: !!process.env.GOOGLE_API_KEY,
-          hasTavily: !!process.env.TAVILY_API_KEY
+    // Daily login bonus endpoint
+    if (path === 'daily-login-bonus') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+      
+      const { userId } = req.body;
+      if (!userId) return res.status(400).json({ error: 'Missing userId' });
+      
+      try {
+        // Simple daily bonus logic
+        const today = new Date().toISOString().split('T')[0];
+        
+        if (supabase) {
+          // Check if user already claimed today
+          const { data: existing } = await supabase
+            .from('daily_bonuses')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('date_claimed', today)
+            .single();
+            
+          if (existing) {
+            return res.status(200).json({ 
+              success: false, 
+              message: 'Already claimed today',
+              nextClaimDate: new Date(Date.now() + 24*60*60*1000).toISOString()
+            });
+          }
+          
+          // Award bonus
+          await supabase.from('daily_bonuses').insert({
+            user_id: userId,
+            date_claimed: today,
+            bonus_amount: 1
+          });
+          
+          // Update user credits
+          const { data: metrics } = await supabase
+            .from('user_metrics')
+            .select('daily_limit')
+            .eq('user_id', userId)
+            .single();
+            
+          await supabase.from('user_metrics').upsert({
+            user_id: userId,
+            daily_limit: (metrics?.daily_limit || 5) + 1,
+            last_updated: new Date().toISOString()
+          });
         }
-      });
-    }
-
-    // Test database access endpoint
-    if (path === 'test/db-access') {
+        
+        return res.status(200).json({ 
+          success: true, 
+          message: 'Daily bonus claimed!',
+          bonusAmount: 1,
+          nextClaimDate: new Date(Date.now() + 24*60*60*1000).toISOString()
+        });
+        } catch (error) {
+          return res.status(500).json({ error: error.message });
+        }
+      }
+  
+      // Test database access endpoint
+      if (path === 'test/db-access') {
       if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
       
       try {
-        const { testDatabaseAccess } = require('./test-db-access');
+        const { testDatabaseAccess } = require('./temp/test-db-access');
         const results = await testDatabaseAccess();
         return res.status(200).json({ success: true, results });
       } catch (error) {
@@ -1082,7 +1214,7 @@ module.exports = async function handler(req, res) {
       if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
       
       try {
-        const { testEmailAccess } = require('./test-email-access');
+        const { testEmailAccess } = require('./temp/test-email-access');
         const results = await testEmailAccess();
         return res.status(200).json({ success: true, results });
       } catch (error) {
@@ -2193,3 +2325,10 @@ module.exports = async function handler(req, res) {
 // Export helper functions for use by agents
 module.exports.getUserFilesContext = getUserFilesContext;
 module.exports.chatWithFallback = chatWithFallback;
+// Expose `processMessage` for testing and provide test helpers to stub internals
+module.exports.processMessage = processMessage;
+module.exports._test = {
+  setChatWithFallback: (fn) => { if (typeof fn === 'function') chatWithFallback = fn; },
+  setSupabaseClient: (client) => { supabase = client; },
+  setPgPool: (pool) => { pgPool = pool; }
+};
