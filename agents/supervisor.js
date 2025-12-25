@@ -7,6 +7,9 @@ const { z } = require('zod');
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
 const { chatWithFallback } = require('../aiUtils');
 
+// Import LangSmith configuration
+const { configureTracingForModels } = require('../langsmithConfig');
+
 // Define state
 const AgentState = Annotation.Root({
   messages: Annotation({
@@ -31,6 +34,7 @@ const AgentState = Annotation.Root({
 let model = null;
 if ((process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY) && ChatGoogleGenerativeAI) {
   try {
+    console.log('[Supervisor] Initializing ChatGoogleGenerativeAI with LangSmith tracing...');
     model = new ChatGoogleGenerativeAI({
       apiKey: process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY,
       model: 'gemini-2.5-flash',
@@ -49,15 +53,19 @@ if ((process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY) && ChatGoogleG
         }
       ]
     });
+    
+    // Apply LangSmith configuration for tracing
+    configureTracingForModels(model);
+    console.log('[Supervisor] ✅ ChatGoogleGenerativeAI initialized with LangSmith enabled');
   } catch (error) {
-    console.warn('Failed to initialize ChatGoogleGenerativeAI:', error.message);
+    console.warn('❌ Failed to initialize ChatGoogleGenerativeAI:', error.message);
   }
 }
 
 // AI call using unified fallback (Mistral/HF/MuleRouter then Google)
 async function callAI(messages) {
   try {
-    console.log('[Supervisor] callAI called, using unified fallback');
+    console.log('[Supervisor] callAI called, using unified fallback with LangSmith tracing');
     await delay(100); // Minimal delay for rate limiting
     console.log('[Supervisor] Calling chatWithFallback...');
 

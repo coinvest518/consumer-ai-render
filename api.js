@@ -9,6 +9,9 @@ const { ChatPromptTemplate, MessagesPlaceholder } = require('@langchain/core/pro
 const Stripe = require('stripe');
 const { Pool } = require('pg');
 
+// Import and initialize LangSmith configuration
+const { configureTracingForModels } = require('./langsmithConfig');
+
 // Helper function to strip markdown formatting from text
 function stripMarkdown(text) {
   if (!text) return text;
@@ -97,14 +100,15 @@ const googleApiKey = process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY
 if (googleApiKey) {
   try {
     console.log('Initializing Google AI model with API key:', googleApiKey ? 'Present' : 'Missing');
-    // Try without LangSmith wrapping first to isolate the issue
+    // LangSmith tracing is automatic when environment variables are set
+    // No need to wrap - it's handled at the LangChain level
     const baseModel = new ChatGoogleGenerativeAI({
       apiKey: googleApiKey,
       model: 'gemini-2.5-flash',
       temperature: 0.7,
       maxRetries: 3,
-      maxOutputTokens: 2048, // Setting a reasonable output limit
-      topP: 0.95, // Default value per documentation
+      maxOutputTokens: 2048,
+      topP: 0.95,
       safetySettings: [
         {
           category: 'HARM_CATEGORY_HARASSMENT',
@@ -117,14 +121,17 @@ if (googleApiKey) {
       ]
     });
 
+    // Apply LangSmith configuration
     chatModel = baseModel;
-    console.log('Google AI model initialized successfully');
+    configureTracingForModels(chatModel);
+    
+    console.log('✅ Google AI model initialized with LangSmith tracing enabled');
   } catch (error) {
-    console.error('Failed to initialize Google AI model:', error.message);
+    console.error('❌ Failed to initialize Google AI model:', error.message);
     chatModel = null;
   }
 } else {
-  console.warn('GOOGLE_API_KEY not found in environment variables');
+  console.warn('⚠️  GOOGLE_API_KEY not found in environment variables');
 }
 
 // Initialize Mistral as backup AI model

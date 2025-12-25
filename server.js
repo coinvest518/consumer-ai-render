@@ -8,13 +8,16 @@ const { Server } = require('socket.io');
 // Load environment variables FIRST
 dotenv.config();
 
+// Initialize LangSmith tracing IMMEDIATELY after dotenv
+const { initializeLangSmith } = require('./langsmithConfig');
+initializeLangSmith();
+
 // Log environment variable status (for debugging)
-console.log('Environment variables loaded:');
+console.log('\n📋 Core Environment Variables:');
 console.log('- GOOGLE_API_KEY:', process.env.GOOGLE_API_KEY ? 'Set' : 'Not set');
 console.log('- GOOGLE_API_KEY value starts with:', process.env.GOOGLE_API_KEY?.substring(0, 10) + '...');
 console.log('- SUPABASE_URL:', process.env.SUPABASE_URL ? 'Set' : 'Not set');
 console.log('- TAVILY_API_KEY:', process.env.TAVILY_API_KEY ? 'Set' : 'Not set');
-console.log('- LANGSMITH_TRACING:', process.env.LANGSMITH_TRACING);
 
 const apiHandler = require('./api');
 
