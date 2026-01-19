@@ -938,12 +938,25 @@ async function legalAgent(state) {
     
     else {
       // Fallback to enhanced legal search with conversational response
-      const legalInfo = await enhancedLegalSearch(message);
+      const searchRes = await enhancedLegalSearch(message, { save: false });
+      let legalContext = '';
+
+      // Normalize returned value (could be: array of docs, string, or { results, saved })
+      let results = null;
+      if (Array.isArray(searchRes)) results = searchRes;
+      else if (searchRes && searchRes.results) results = searchRes.results;
+      else if (typeof searchRes === 'string') results = searchRes;
+
+      if (Array.isArray(results)) {
+        // Build a short context summary (top 3)
+        const top = results.slice(0, 3);
+        legalContext = top.map(r => `- ${r.title}: ${((r.text||'').substring(0, 300)).replace(/\n+/g,' ')} [source: ${r.source}]`).join('\n');
+      } else if (typeof results === 'string') {
+        legalContext = results;
+      }
+
       const aiResponse = await callAI([
-        new SystemMessage(`You are a friendly consumer law expert. Use this legal context: ${legalInfo}. 
-        
-        Provide practical, actionable advice in a conversational tone. Use emojis and formatting to make it engaging. 
-        Focus on what the user can actually DO, not just legal theory. Include specific steps and deadlines when relevant.`),
+        new SystemMessage(`You are a friendly consumer law expert. Use this legal context (do NOT invent facts beyond the source content):\n\n${legalContext}\n\nProvide practical, actionable advice in a conversational tone. Use emojis and formatting to make it engaging. Focus on what the user can actually DO, not just legal theory. Include specific steps and deadlines when relevant.`),
         new HumanMessage(message)
       ]);
       response = aiResponse.content;

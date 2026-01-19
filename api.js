@@ -1208,6 +1208,37 @@ module.exports = async function handler(req, res) {
       if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
       
       try {
+
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
+      }
+    }
+
+    // Legal search endpoint - used by front-end button to request search + optional save
+    if (path === 'legal/search') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+      try {
+        const { query, save, userId: bodyUserId } = req.body || {};
+        const uid = bodyUserId || req.headers['user-id'] || null;
+        if (!query) return res.status(400).json({ error: 'query is required' });
+
+        // If save requested, ensure a userId is available (bind saved docs to a user)
+        if (save && !uid) return res.status(403).json({ error: 'userId required to save documents' });
+
+        const result = await enhancedLegalSearch(query, { save: !!save, userId: uid });
+        return res.status(200).json({ success: true, result });
+      } catch (err) {
+        console.error('legal/search failed:', err);
+        return res.status(500).json({ error: 'legal search/save failed', details: err.message });
+      }
+    }
+
+    // Test email access endpoint
+    if (path === 'test/email-access') {
+      if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+      
+      try {
         const { testEmailAccess } = require('./temp/test-email-access');
         const results = await testEmailAccess();
         return res.status(200).json({ success: true, results });
