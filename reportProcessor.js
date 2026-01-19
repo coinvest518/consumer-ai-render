@@ -17,7 +17,21 @@ const mistral = new Mistral({
   apiKey: process.env.MISTRAL_API_KEY,
 });
 
-const { chatWithFallback } = require('./temp/aiUtils');
+let chatWithFallback;
+try {
+  chatWithFallback = require('./temp/aiUtils').chatWithFallback;
+} catch (error) {
+  console.warn('Failed to load ./temp/aiUtils, trying ./aiUtils:', error.message);
+  try {
+    chatWithFallback = require('./aiUtils').chatWithFallback;
+  } catch (fallbackError) {
+    console.error('Failed to load aiUtils from both locations:', fallbackError.message);
+    // Provide a minimal fallback function
+    chatWithFallback = async (messages) => {
+      throw new Error('AI utilities not available - check aiUtils.js file');
+    };
+  }
+}
 
 /**
  * Download file from Supabase storage

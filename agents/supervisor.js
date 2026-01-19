@@ -5,7 +5,21 @@ const { z } = require('zod');
 
 // Import dependencies
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
-const { chatWithFallback } = require('../temp/aiUtils');
+let chatWithFallback;
+try {
+  chatWithFallback = require('../temp/aiUtils').chatWithFallback;
+} catch (error) {
+  console.warn('Failed to load ../temp/aiUtils, trying ../aiUtils:', error.message);
+  try {
+    chatWithFallback = require('../aiUtils').chatWithFallback;
+  } catch (fallbackError) {
+    console.error('Failed to load aiUtils from both locations:', fallbackError.message);
+    // Provide a minimal fallback function
+    chatWithFallback = async (messages) => {
+      throw new Error('AI utilities not available - check aiUtils.js file');
+    };
+  }
+}
 
 // Import LangSmith configuration
 const { configureTracingForModels } = require('../langsmithConfig');
@@ -166,13 +180,24 @@ async function supervisor(state) {
     
     // Fallback to AI routing using centralized fallback
     try {
-      const { chatWithFallback } = require('../temp/aiUtils');
+      let fallbackChatWithFallback;
+      try {
+        fallbackChatWithFallback = require('../temp/aiUtils').chatWithFallback;
+      } catch (error) {
+        try {
+          fallbackChatWithFallback = require('../aiUtils').chatWithFallback;
+        } catch (fallbackError) {
+          console.error('Cannot load aiUtils for routing fallback:', fallbackError.message);
+          return { next: 'legal' }; // Default to legal agent
+        }
+      }
+      
       const routingMessages = [
         new SystemMessage(systemPrompt),
         ...state.messages,
         new HumanMessage(`Who should act next? Select one of: ${members.join(', ')}`)
       ];
-      const { response } = await chatWithFallback(routingMessages);
+      const { response } = await fallbackChatWithFallback(routingMessages);
       const content = response && (response.content || response) ? String(response.content || response).toLowerCase() : '';
       for (const member of members) {
         if (content.includes(member)) return { next: member };

@@ -4,9 +4,9 @@
   "description": "ConsumerAI Backend API",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node copy-temp.js && node server.js",
     "dev": "nodemon server.js",
-    "build": "npm install --legacy-peer-deps --force",
+    "build": "npm install --legacy-peer-deps --force && node copy-temp.js",
     "test:integration": "node test-api-chat.js"
   },
   "keywords": [],
