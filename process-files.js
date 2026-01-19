@@ -73,7 +73,7 @@ async function processFile(userId, fileName) {
 
   try {
     console.log('1. Extracting text (OCR if needed)...');
-    const result = await require('./reportProcessor').processDocument(filePath, userId);
+    const result = await processCreditReport(filePath, userId);
 
     console.log('✅ Text extracted successfully!');
     console.log(`📏 Text length: ${result.extractedText?.length || 0} characters`);

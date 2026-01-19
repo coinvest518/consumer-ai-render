@@ -1025,4 +1025,4 @@ const graph = workflow.compile({
   recursionLimit: 3 // Minimal steps to prevent loops
 });
 
-module.exports = { graph, AgentState, reportAgent };
+module.exports = { graph, AgentState, reportAgent, supervisor };

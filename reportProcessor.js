@@ -716,9 +716,10 @@ IMPORTANT INSTRUCTIONS:
  * @param {string} filePath - Path to file in storage
  * @returns {Promise<Object>} - Complete analysis
  */
-async function processCreditReport(filePath) {
+async function processCreditReport(filePath, userId = null) {
   // Backwards-compatible wrapper that calls the general processor
-  const res = await processDocument(filePath);
+  // Accept optional userId so OCR artifacts can be saved when available
+  const res = await processDocument(filePath, userId);
   // Ensure docType is credit-report (or warn)
   if (res.docType && res.docType !== 'credit-report') {
     console.warn(`processCreditReport: detected docType=${res.docType} for ${filePath}`);
