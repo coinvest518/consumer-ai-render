@@ -4,7 +4,7 @@ const { TavilySearch } = require('@langchain/tavily');
 const axios = require('axios');
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
 const { HumanMessage, SystemMessage } = require('@langchain/core/messages');
-const { chatWithFallback } = require('./aiUtils');
+const { chatWithFallback } = require('./temp/aiUtils');
 
 // Initialize AstraDB client
 let astraClient = null;

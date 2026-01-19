@@ -21,7 +21,6 @@
     "@langchain/google-gauth": "^0.2.16",
     "@langchain/google-genai": "^2.0.4",
     "@langchain/langgraph": "^0.2.19",
-    "@langchain/openai": "^0.3.17",
     "@langchain/tavily": "^1.0.1",
     "@mistralai/mistralai": "^1.10.0",
     "@supabase/supabase-js": "^2.50.5",

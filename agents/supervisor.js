@@ -5,7 +5,7 @@ const { z } = require('zod');
 
 // Import dependencies
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
-const { chatWithFallback } = require('../aiUtils');
+const { chatWithFallback } = require('../temp/aiUtils');
 
 // Import LangSmith configuration
 const { configureTracingForModels } = require('../langsmithConfig');
@@ -166,7 +166,7 @@ async function supervisor(state) {
     
     // Fallback to AI routing using centralized fallback
     try {
-      const { chatWithFallback } = require('../aiUtils');
+      const { chatWithFallback } = require('../temp/aiUtils');
       const routingMessages = [
         new SystemMessage(systemPrompt),
         ...state.messages,

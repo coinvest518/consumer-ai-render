@@ -17,7 +17,7 @@ const mistral = new Mistral({
   apiKey: process.env.MISTRAL_API_KEY,
 });
 
-const { chatWithFallback } = require('./aiUtils');
+const { chatWithFallback } = require('./temp/aiUtils');
 
 /**
  * Download file from Supabase storage
@@ -385,7 +385,7 @@ async function classifyWithEmbeddings(text, k = 5, minScore = 0.7) {
 }
 
 /**
- * Analyze extracted text for errors and violations using OpenAI
+ * Analyze extracted text for errors and violations using LLM(s) (prefer Mistral)
  * @param {string} text - Extracted text
  * @returns {Promise<Object>} - Structured analysis
  */
@@ -522,78 +522,154 @@ IMPORTANT INSTRUCTIONS:
 - Return ONLY the JSON object with no additional text`;
 
   try {
-    const { response } = await chatWithFallback([
-      new SystemMessage(systemPrompt),
-      new HumanMessage(`Analyze this credit report text:\n\n${truncatedText}`)
-    ]);
+      const { response, model: analysis_model } = await chatWithFallback([
+        new SystemMessage(systemPrompt),
+        new HumanMessage(`Analyze this credit report text:\n\n${truncatedText}`)
+      ]);
 
-    // Parse the JSON response
-    const analysisText = (response && (response.content || response)) ? String(response.content || response).trim() : '';
-    console.log('🤖 AI Response received, length:', analysisText.length, 'chars');
-    
-    // Remove markdown code blocks if present
-    let jsonText = analysisText.replace(/```json\n?|\n?```/g, '').trim();
-    
-    // Handle cases where JSON is wrapped in extra quotes or has escape characters
-    if (jsonText.startsWith('"') && jsonText.endsWith('"')) {
-      jsonText = jsonText.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-    }
+      // Parse the JSON response and capture raw snippet + model
+      const analysisText = (response && (response.content || response)) ? String(response.content || response).trim() : '';
+      const rawSnippet = analysisText.substring(0, 2000);
+      console.log('🤖 AI Response received, length:', analysisText.length, 'chars');
 
-    let parsed = null;
-    try {
-      parsed = JSON.parse(jsonText);
-      console.log('✅ JSON parsed successfully');
-    } catch (parseError) {
-      console.error('❌ JSON parse error, trying to extract...');
-      const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          parsed = JSON.parse(jsonMatch[0]);
-          console.log('✅ JSON extracted and parsed');
-        } catch (secondParseError) {
-          console.error('❌ Cannot parse JSON:', secondParseError.message);
+      // Remove markdown code blocks if present
+      let jsonText = analysisText.replace(/```json\n?|\n?```/g, '').trim();
+      
+      // Handle cases where JSON is wrapped in extra quotes or has escape characters
+      if (jsonText.startsWith('"') && jsonText.endsWith('"')) {
+        jsonText = jsonText.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+      }
+
+      let parsed = null;
+      try {
+        parsed = JSON.parse(jsonText);
+        console.log('✅ JSON parsed successfully');
+      } catch (parseError) {
+        console.error('❌ JSON parse error, trying to extract...');
+        const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            parsed = JSON.parse(jsonMatch[0]);
+            console.log('✅ JSON extracted and parsed');
+          } catch (secondParseError) {
+            console.error('❌ Cannot parse JSON:', secondParseError.message);
+          }
         }
       }
-    }
 
-    // Transform camelCase field names to snake_case if needed
-    if (parsed) {
-      const fieldMap = {
-        'personalinfoanalysis': 'personal_info_issues',
-        'inquiryanalysis': 'inquiries',
-        'collectionaccountsanalysis': 'collection_accounts',
-        'regularaccounts': 'account_issues',
-        'overallassessment': 'overall_assessment',
-        'disputelettersneeded': 'dispute_letters_needed'
-      };
-      
-      for (const [camel, snake] of Object.entries(fieldMap)) {
-        if (parsed[camel] && !parsed[snake]) {
-          parsed[snake] = parsed[camel];
-          delete parsed[camel];
+      // If parsed, attempt to fill missing sections with one targeted follow-up prompt
+      if (parsed) {
+        // Annotate with metadata
+        parsed._raw_response_snippet = rawSnippet;
+        parsed._analysis_models = [analysis_model || null];
+
+        const fieldMap = {
+          'personalinfoanalysis': 'personal_info_issues',
+          'inquiryanalysis': 'inquiries',
+          'collectionaccountsanalysis': 'collection_accounts',
+          'regularaccounts': 'account_issues',
+          'overallassessment': 'overall_assessment',
+          'disputelettersneeded': 'dispute_letters_needed'
+        };
+        
+        for (const [camel, snake] of Object.entries(fieldMap)) {
+          if (parsed[camel] && !parsed[snake]) {
+            parsed[snake] = parsed[camel];
+            delete parsed[camel];
+          }
         }
+
+        // Ensure all required fields exist (pre-merge defaults)
+        parsed.summary = parsed.summary || 'Analysis completed';
+        parsed.personal_info_issues = parsed.personal_info_issues || [];
+        parsed.account_issues = parsed.account_issues || [];
+        parsed.collection_accounts = parsed.collection_accounts || [];
+        parsed.inquiries = parsed.inquiries || [];
+        parsed.fcra_violations = parsed.fcra_violations || [];
+        parsed.overall_assessment = parsed.overall_assessment || {
+          credit_score_impact: 'unknown',
+          total_accounts_affected: 0,
+          total_violations_found: 0,
+          overall_risk_level: 'unknown',
+          priority_actions: []
+        };
+        parsed.dispute_letters_needed = parsed.dispute_letters_needed || [];
+
+        // Compute missing required sections
+        const required = ['personal_info_issues','account_issues','collection_accounts','inquiries','fcra_violations','overall_assessment','dispute_letters_needed'];
+        const missing = required.filter(k => {
+          const v = parsed[k];
+          if (!v) return true;
+          if (Array.isArray(v)) return v.length === 0;
+          if (typeof v === 'object') return Object.keys(v).length === 0;
+          return false;
+        });
+
+        parsed._missing_sections = missing;
+
+        // If some sections are missing, perform ONE targeted follow-up query to retrieve them
+        if (missing.length > 0) {
+          try {
+            console.log('🔁 Missing sections detected:', missing.join(', '), '- requesting targeted follow-up');
+            const followupPrompt = `The previous JSON response omitted or left empty the following sections: ${missing.join(', ')}. Return ONLY a JSON object containing these fields populated (use same field names as earlier response). Include evidence quotes where possible.`;
+            const { response: followResp, model: followModel } = await chatWithFallback([
+              new SystemMessage(systemPrompt),
+              new HumanMessage(followupPrompt + '\n\n' + truncatedText)
+            ]);
+
+            const followText = (followResp && (followResp.content || followResp)) ? String(followResp.content || followResp).trim() : '';
+            const followJsonText = followText.replace(/```json\n?|\n?```/g, '').trim();
+            let followParsed = null;
+            try { followParsed = JSON.parse(followJsonText); } catch (e) {
+              const m = followJsonText.match(/\{[\s\S]*\}/);
+              if (m) {
+                try { followParsed = JSON.parse(m[0]); } catch (e2) { followParsed = null; }
+              }
+            }
+
+            if (followParsed) {
+              // Normalize camelCase fields from follow-up and merge into parsed
+              for (const [camel, snake] of Object.entries(fieldMap)) {
+                if (followParsed[camel] && !followParsed[snake]) {
+                  followParsed[snake] = followParsed[camel];
+                  delete followParsed[camel];
+                }
+              }
+
+              for (const key of Object.keys(followParsed)) {
+                if (required.includes(key)) {
+                  // If originally empty, replace with follow-up result
+                  parsed[key] = followParsed[key] || parsed[key];
+                } else {
+                  parsed[key] = parsed[key] || followParsed[key];
+                }
+              }
+
+              parsed._analysis_models.push(followModel || null);
+              parsed._raw_response_snippet = (parsed._raw_response_snippet || '') + '\n\n[followup_snippet]\n' + followText.substring(0, 2000);
+
+              // Recompute missing sections
+              const missingAfter = required.filter(k => {
+                const v = parsed[k];
+                if (!v) return true;
+                if (Array.isArray(v)) return v.length === 0;
+                if (typeof v === 'object') return Object.keys(v).length === 0;
+                return false;
+              });
+              parsed._missing_sections = missingAfter;
+              console.log('🔍 After follow-up, missing sections:', parsed._missing_sections);
+            } else {
+              console.warn('⚠️ Follow-up parsing failed or returned no JSON');
+            }
+          } catch (err) {
+            console.warn('⚠️ Follow-up request failed:', err.message);
+          }
+        }
+
+        console.log('📊 Field Counts: personal_info=' + parsed.personal_info_issues.length + ' account_issues=' + parsed.account_issues.length + ' inquiries=' + parsed.inquiries.length + ' collections=' + parsed.collection_accounts.length + ' fcra=' + parsed.fcra_violations.length + ' disputes=' + parsed.dispute_letters_needed.length);
+        
+        return parsed;
       }
-      
-      // Ensure all required fields exist
-      parsed.summary = parsed.summary || 'Analysis completed';
-      parsed.personal_info_issues = parsed.personal_info_issues || [];
-      parsed.account_issues = parsed.account_issues || [];
-      parsed.collection_accounts = parsed.collection_accounts || [];
-      parsed.inquiries = parsed.inquiries || [];
-      parsed.fcra_violations = parsed.fcra_violations || [];
-      parsed.overall_assessment = parsed.overall_assessment || {
-        credit_score_impact: 'unknown',
-        total_accounts_affected: 0,
-        total_violations_found: 0,
-        overall_risk_level: 'unknown',
-        priority_actions: []
-      };
-      parsed.dispute_letters_needed = parsed.dispute_letters_needed || [];
-      
-      console.log('📊 Field Counts: personal_info=' + parsed.personal_info_issues.length + ' account_issues=' + parsed.account_issues.length + ' inquiries=' + parsed.inquiries.length + ' collections=' + parsed.collection_accounts.length + ' fcra=' + parsed.fcra_violations.length + ' disputes=' + parsed.dispute_letters_needed.length);
-      
-      return parsed;
-    }
 
     // Fallback: return a structured response wrapping raw AI output
     return {

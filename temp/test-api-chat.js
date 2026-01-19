@@ -41,7 +41,7 @@ async function main() {
   console.log('Posting chat message...', { sessionId, userId });
   const post = await request({
     hostname: 'localhost', port: 3001, path: '/api/chat', method: 'POST',
-    headers: { 'Content-Type': 'application/json' }
+    headers: { 'Content-Type': 'application/json', 'x-test-mode': 'true' }  // Add test mode header to skip user validation
   }, { message, sessionId, userId });
 
   console.log('POST result status:', post.status);

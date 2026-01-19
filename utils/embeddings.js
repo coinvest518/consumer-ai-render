@@ -1,20 +1,20 @@
 const crypto = require('crypto');
 
-// Try to compute a high-quality embedding using OpenAI; otherwise fall back to a simple hashed vector
+// Try to compute a high-quality embedding using Mistral embeddings if available; otherwise fall back to a simple hashed vector
 async function getEmbedding(text) {
   text = String(text || '').trim();
   if (!text) return null;
 
-  // Prefer OpenAI embeddings if key present
-  if (process.env.OPENAI_API_KEY) {
+  // Prefer Mistral embeddings if key present
+  if (process.env.MISTRAL_API_KEY) {
     try {
-      const { OpenAI } = require('openai');
-      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const res = await client.embeddings.create({ model: 'text-embedding-3-small', input: text });
-      const emb = res.data[0].embedding;
+      const { Mistral } = require('@mistralai/mistralai');
+      const client = new Mistral({ apiKey: process.env.MISTRAL_API_KEY });
+      const res = await client.embeddings.create({ model: 'mistral-embed', inputs: [text] });
+      const emb = res?.data?.[0]?.embedding || res?.data?.embedding;
       if (emb && emb.length) return emb;
     } catch (err) {
-      console.warn('OpenAI embedding failed:', err.message);
+      console.warn('Mistral embedding failed:', err.message);
     }
   }
 
